@@ -1,6 +1,8 @@
+this enitre repo is generated with ai
+
 # Maps Site Checker
 
-A small **local** web app for building a **Petzio** call list. Import a CSV of businesses (e.g. the one your Table Scraper extension exports from Google Maps), tell it which columns are which, and it visits each business's **website** and uses a **local AI model (Ollama)** to answer your questions — *is it a staffed boarding/daycare facility? solo sitter? already has webcams or a pet-parent update app?* — then gives you a clean CSV you open in Google Sheets and know who to call.
+A small **local** web app for building a **Petzio** call list. Import a CSV of businesses (e.g. the one your Table Scraper extension exports from Google Maps), tell it which columns are which, and it visits each business's **website** and uses a **local AI model (Ollama)** to answer your questions — _is it a staffed boarding/daycare facility? solo sitter? already has webcams or a pet-parent update app?_ — then gives you a clean CSV you open in Google Sheets and know who to call.
 
 Nothing leaves your machine except fetching the public business websites. The AI runs locally.
 
@@ -44,6 +46,7 @@ bun install        # one time only — also downloads the headless browser
 **1. Import CSV** — drag your CSV in (or click). Works with any CSV; the cryptic headers from the extension (`hfpxzc_label`, `span_2`, …) are fine.
 
 **2. Map your columns** — for each role, pick which column it is. The app pre-guesses from the data and shows a sample value under each so you can confirm:
+
 - **Name**, **Phone** — for your call list
 - **Website / site** — the business's real website (the `site` field your extension grabs). Leave as `none` if you don't have it.
 - **Google Maps link** — the listing URL. **If you only have Maps links and no website**, map this column and the app will open each listing in a headless browser and read the website off it automatically (see "Resolving websites" below).
@@ -52,24 +55,27 @@ bun install        # one time only — also downloads the headless browser
 You need **either** a Website column **or** a Google Maps link column (or both). With only Maps links, the app resolves the websites for you.
 
 **3. What to check** — pick the local **model**, edit the **AI instruction** (overall context), and edit the **checks**. Each check is a `column_key` + a yes/no question + a **Want**:
-- **Want = yes / no** — the answer that makes a *good lead*. It drives the **Lead** column and the green/red colours (e.g. `offers_boarding` wants **yes**, `has_webcams` wants **no**).
+
+- **Want = yes / no** — the answer that makes a _good lead_. It drives the **Lead** column and the green/red colours (e.g. `offers_boarding` wants **yes**, `has_webcams` wants **no**).
 - **Want = info only** — just record the answer, don't let it affect the Lead verdict (e.g. `is_vet`).
 
 The defaults match the Petzio target — a staffed boarding/daycare facility that still fields "how's my dog?" requests by hand:
 
-| key | question (short) | want |
-|---|---|---|
-| boarding_or_daycare | runs an overnight boarding or daycare facility? (yes even if a vet that also boards) | yes |
-| is_solo_operator | one person / in-home sitter, no front desk? | no |
-| has_webcams | already has live pet webcams (owners self-serve)? | no |
-| has_owner_update_app | already uses a pet-parent app / report-card portal (Gingr, PetExec, …)? | no |
-| is_vet | primarily a vet clinic? | info |
+| key                  | question (short)                                                                     | want |
+| -------------------- | ------------------------------------------------------------------------------------ | ---- |
+| boarding_or_daycare  | runs an overnight boarding or daycare facility? (yes even if a vet that also boards) | yes  |
+| is_solo_operator     | one person / in-home sitter, no front desk?                                          | no   |
+| has_webcams          | already has live pet webcams (owners self-serve)?                                    | no   |
+| has_owner_update_app | already uses a pet-parent app / report-card portal (Gingr, PetExec, …)?              | no   |
+| is_vet               | primarily a vet clinic?                                                              | info |
 
 Change or add your own; instruction + checks are remembered between runs. (If you previously ran the app, hit **↺ defaults** to load these.)
+
 - **Skip duplicates** (on): drops repeated phone numbers or website domains.
 - **Resolve from Maps link** (on): see below.
 
 **4. Run & export** — press **Scan**. Each row runs live (progress bar + per-row status). The **Lead** column says **✓ call / maybe / skip** based on your Wants (a temporarily/permanently closed business is never a "call"). When done:
+
 - **⬇ Export CSV** — columns: lead, name, phone, city, website, business_status, your check columns, business_type, confidence, ai_notes, status, maps_link.
 - **⧉ Copy for Sheets** — tab-separated; paste straight into Google Sheets as cells.
 
@@ -94,17 +100,17 @@ For every site it fetches the homepage, reads `sitemap.xml`, and then follows th
 
 ## Row statuses you'll see
 
-| Status | Meaning |
-|---|---|
-| **done** | Website scanned, AI verdict filled in |
-| **finding site…** | Opening the Maps link in the headless browser to get the website |
-| **no website** | The Maps listing has no website button (genuinely no site) |
-| **couldn't open maps** | The Maps link failed to load / timed out |
-| **google blocked** | Google captcha from too many hits — wait and re-run |
-| **maps link only** | Row had only a Maps link and resolution was turned off |
-| **site unreachable** | The website blocked the request or timed out (big chains with bot protection do this) — check it by hand |
-| **no text** | Site is JavaScript-only with no readable text |
-| **AI error** | Ollama wasn't reachable or errored — check the Ollama badge |
+| Status                 | Meaning                                                                                                  |
+| ---------------------- | -------------------------------------------------------------------------------------------------------- |
+| **done**               | Website scanned, AI verdict filled in                                                                    |
+| **finding site…**      | Opening the Maps link in the headless browser to get the website                                         |
+| **no website**         | The Maps listing has no website button (genuinely no site)                                               |
+| **couldn't open maps** | The Maps link failed to load / timed out                                                                 |
+| **google blocked**     | Google captcha from too many hits — wait and re-run                                                      |
+| **maps link only**     | Row had only a Maps link and resolution was turned off                                                   |
+| **site unreachable**   | The website blocked the request or timed out (big chains with bot protection do this) — check it by hand |
+| **no text**            | Site is JavaScript-only with no readable text                                                            |
+| **AI error**           | Ollama wasn't reachable or errored — check the Ollama badge                                              |
 
 ## Speed
 
