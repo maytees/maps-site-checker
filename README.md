@@ -97,6 +97,14 @@ Your earlier CSVs only have the Google Maps **link**, not the business website (
 - It's **on by default** (toggle in step 3). It runs for rows missing a website **or** missing a phone — and while it's there it also reads the phone and the open/closed state.
 - It's slower than a plain fetch (~0.6–2s per listing) and runs the browser in the background; it auto-closes when idle.
 - If Google shows a captcha because you've hit it a lot, those rows come back **google blocked** — wait a bit and re-run (done rows are kept).
+
+### Avoiding captchas (settings under the resolve toggle)
+- **parallel** (default 2) — how many Maps listings open at once. Drop to **1** if you're getting captcha'd.
+- **delay** (default 1100 ms) — pause between lookups. Raise it (e.g. 2500) to be politer.
+- These are enforced server-side, plus an automatic **90 s cooldown** for all lookups the moment one hits a captcha.
+- **use my real Chrome** — opens a real Chrome window (persistent profile under `data/chrome-profile`) instead of headless. **Sign into Google in that window once** and it's remembered — a logged-in real Chrome gets captcha'd far less. Needs Chrome installed.
+- Already-resolved listings are **cached forever** (keyed by the Maps URL), so re-runs never re-hit Google for them. Splitting a big list into smaller runs lets each cache.
+- Best of all: scrape the **site** (and phone) field in the Table Scraper extension so the CSV already has them — then no Maps lookups happen at all.
 - Going forward, if you pick the **site** field in the extension while scraping, the website is already in the CSV and this step is skipped.
 
 The resolved site shows up in the **Site** column of the results so you can see what it found.

@@ -140,6 +140,10 @@ export default function Page() {
   const [aiPick, setAiPick] = useState(true);
   const [verifyWebsite, setVerifyWebsite] = useState(false);
   const [concurrency, setConcurrency] = useState(4);
+  const [resolveConc, setResolveConc] = useState(2);     // Maps lookups in parallel (captcha-sensitive)
+  const [resolveGap, setResolveGap] = useState(1100);    // ms between Maps lookups
+  const [useChrome, setUseChrome] = useState(false);     // use real Chrome profile instead of headless
+  const resolveOpts = () => ({ resolveConcurrency: resolveConc, resolveGap, browserMode: useChrome ? 'chrome' : 'headless' });
 
   const [results, setResults] = useState(null); // [{name,phone,city,website,maps,status,verdict,error}]
   const [running, setRunning] = useState(false);
@@ -199,6 +203,9 @@ export default function Page() {
       if (typeof c.aiPick === 'boolean') setAiPick(c.aiPick);
       if (typeof c.verifyWebsite === 'boolean') setVerifyWebsite(c.verifyWebsite);
       if (c.concurrency) setConcurrency(c.concurrency);
+      if (c.resolveConc) setResolveConc(c.resolveConc);
+      if (typeof c.resolveGap === 'number') setResolveGap(c.resolveGap);
+      if (typeof c.useChrome === 'boolean') setUseChrome(c.useChrome);
       if (c.model) setModel(c.model);
     } catch {}
     refreshModels();
@@ -208,10 +215,10 @@ export default function Page() {
   // persist config
   useEffect(() => {
     const t = setTimeout(() => {
-      localStorage.setItem(LS, JSON.stringify({ instruction, checks, dedupe, resolveMaps, aiPick, verifyWebsite, concurrency, model }));
+      localStorage.setItem(LS, JSON.stringify({ instruction, checks, dedupe, resolveMaps, aiPick, verifyWebsite, concurrency, resolveConc, resolveGap, useChrome, model }));
     }, 300);
     return () => clearTimeout(t);
-  }, [instruction, checks, dedupe, resolveMaps, aiPick, verifyWebsite, concurrency, model]);
+  }, [instruction, checks, dedupe, resolveMaps, aiPick, verifyWebsite, concurrency, resolveConc, resolveGap, useChrome, model]);
 
   async function refreshModels() {
     setOllama({ state: 'checking', error: '' });
@@ -334,7 +341,7 @@ export default function Page() {
         try {
           rr = await fetch('/api/resolve', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ mapsUrl: row.maps, noCache }),
+            body: JSON.stringify({ mapsUrl: row.maps, noCache, ...resolveOpts() }),
           }).then((x) => x.json());
         } catch (e) { rr = { status: 'failed', error: String(e) }; }
         if (rr.phone && !row.phone) row.phone = rr.phone;
@@ -417,7 +424,7 @@ export default function Page() {
           try {
             rr = await fetch('/api/resolve', {
               method: 'POST', headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ mapsUrl: row.maps, noCache }),
+              body: JSON.stringify({ mapsUrl: row.maps, noCache, ...resolveOpts() }),
             }).then((x) => x.json());
           } catch (e) { rr = { status: 'failed', error: String(e) }; }
           if (rr.phone && !phone) phone = rr.phone;
@@ -690,6 +697,20 @@ export default function Page() {
             <input type="checkbox" checked={resolveMaps} onChange={(e) => setResolveMaps(e.target.checked)} />
             Resolve the website from the Google Maps link when a row has no site (headless browser — slower, needed for Maps-link-only CSVs)
           </label>
+          <div className="row small muted" style={{ gap: 12, marginTop: 6, paddingLeft: 22, flexWrap: 'wrap' }}>
+            <span style={{ color: '#9ec1ff' }}>Maps lookups (anti-captcha) —</span>
+            <label className="row" style={{ gap: 5 }} title="How many Google Maps listings to open at once. Lower = less likely to get captcha'd.">
+              parallel <input type="number" min={1} max={6} value={resolveConc} style={{ width: 52 }} onChange={(e) => setResolveConc(Math.max(1, +e.target.value || 1))} />
+            </label>
+            <label className="row" style={{ gap: 5 }} title="Pause between Maps lookups. Higher = politer.">
+              delay <input type="number" min={0} step={100} value={resolveGap} style={{ width: 66 }} onChange={(e) => setResolveGap(Math.max(0, +e.target.value || 0))} /> ms
+            </label>
+            <label className="row" style={{ gap: 6 }} title="Opens a real Chrome window instead of headless. Sign into Google once in it — logged-in Chrome gets captcha'd far less.">
+              <input type="checkbox" checked={useChrome} onChange={(e) => setUseChrome(e.target.checked)} /> use my real Chrome
+            </label>
+          </div>
+          {useChrome &&
+            <span className="pill" style={{ marginTop: 4 }}>A real Chrome window opens on the next lookup — <b>sign into Google in it once</b> and it remembers (needs Chrome installed). Getting captcha'd? Drop parallel to 1 and raise the delay.</span>}
           <label className="row small muted" style={{ gap: 7, marginTop: 6 }}>
             <input type="checkbox" checked={aiPick} onChange={(e) => setAiPick(e.target.checked)} />
             🧠 Let the AI pick which pages to read from the sitemap (smarter than keyword matching; +1 quick AI call per site). Off = faster, keyword-picked.

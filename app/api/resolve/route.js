@@ -1,4 +1,4 @@
-import { resolveWebsite } from '@/lib/resolve';
+import { resolveWebsite, configure } from '@/lib/resolve';
 import { log, warn, short } from '@/lib/log';
 import { cacheGet, cachePut } from '@/lib/cache';
 
@@ -12,6 +12,8 @@ export async function POST(req) {
   try { body = await req.json(); } catch { return json({ ok: false, status: 'failed', error: 'invalid body' }, 400); }
   const mapsUrl = body?.mapsUrl;
   if (!mapsUrl) return json({ ok: false, status: 'failed', error: 'no mapsUrl' }, 400);
+
+  configure({ concurrency: body.resolveConcurrency, gapMs: body.resolveGap, browserMode: body.browserMode, profileDir: body.profileDir });
 
   if (!body.noCache) {
     const hit = cacheGet('resolve', mapsUrl, null);
