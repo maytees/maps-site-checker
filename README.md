@@ -56,7 +56,7 @@ You need **either** a Website column **or** a Google Maps link column (or both).
 
 **3. What to check** — pick the local **model**, edit the **AI instruction** (overall context), and edit the **checks**. Each check is a `column_key` + a yes/no question + a **Want**:
 
-- **Want = yes / no** — the answer that makes a _good lead_. It drives the **Lead** column and the green/red colours (e.g. `offers_boarding` wants **yes**, `has_webcams` wants **no**).
+- **Want = yes / no** — the answer that makes a _good lead_. It drives the **Lead** column and the green/red colours (e.g. `offers_boarding` wants **yes**, `has_webcams` wants **no**). For **want = no** checks (the "does it already have X" ones), if the site doesn't clearly show the feature the answer is forced to **no**, not "unclear" — a business advertises webcams / its owner app, so absence means they don't have it. This stops those checks from inflating "maybe".
 - **Want = info only** — just record the answer, don't let it affect the Lead verdict (e.g. `is_vet`).
 
 The defaults match the Petzio target — a staffed boarding/daycare facility that still fields "how's my dog?" requests by hand:

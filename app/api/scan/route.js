@@ -23,7 +23,7 @@ export async function POST(req) {
   if (norm.mapsOnly) { warn('scan', `✗ ${name}: maps link only`); return json({ ok: true, status: 'maps-only', error: 'only a Google Maps link — re-scrape with the website (site) field picked' }); }
 
   // cache: keyed by domain + a hash of checks/model/instruction
-  const sig = sigOf(checks.map((c) => [c.key, c.question]), model, instruction || '');
+  const sig = sigOf(checks.map((c) => [c.key, c.question, c.want || '']), model, instruction || '');
   if (!noCache) {
     const hit = cacheGet('scan', norm.host, sig);
     if (hit) { log('scan', `• ${name} (cached)`); return json({ ok: true, status: 'done', cached: true, ...hit }); }

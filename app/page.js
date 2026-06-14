@@ -294,8 +294,16 @@ export default function Page() {
 
   function getCleanChecks() {
     return checks
-      .map((c) => ({ key: (c.key || '').trim().replace(/[^a-z0-9_]+/gi, '_').toLowerCase(), question: (c.question || '').trim() }))
+      .map((c) => ({ key: (c.key || '').trim().replace(/[^a-z0-9_]+/gi, '_').toLowerCase(), question: (c.question || '').trim(), want: c.want || '' }))
       .filter((c) => c.key && c.question);
+  }
+
+  // A "has X already" check (want: no) should be NO when the site doesn't show it, not unclear.
+  function applyUnsureRule(verdict) {
+    if (!verdict) return verdict;
+    const v = { ...verdict };
+    for (const c of checks) if (c.want === 'no' && v[c.key] === 'unclear') v[c.key] = 'no';
+    return v;
   }
 
   async function run() {
@@ -368,7 +376,7 @@ export default function Page() {
             ...c[i],
             phone: phone || res.sitePhone || '',
             status: res.status || (res.ok ? 'done' : 'error'),
-            verdict: res.verdict || null,
+            verdict: applyUnsureRule(res.verdict) || null,
             error: res.error || '',
             finalUrl: res.finalUrl || website,
             email: res.email || '',
@@ -428,7 +436,7 @@ export default function Page() {
         } catch (e) { res = { ok: false, status: 'error', error: String(e) }; }
         setResults((prev) => {
           const c = prev.slice();
-          c[i] = { ...c[i], status: res.status || (res.ok ? 'done' : 'error'), verdict: res.verdict || c[i].verdict, error: res.error || '',
+          c[i] = { ...c[i], status: res.status || (res.ok ? 'done' : 'error'), verdict: applyUnsureRule(res.verdict) || c[i].verdict, error: res.error || '',
             email: res.email || c[i].email, socials: res.socials || c[i].socials, phone: c[i].phone || res.sitePhone || '', cached: res.cached || false };
           return c;
         });
