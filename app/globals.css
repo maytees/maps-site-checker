@@ -113,6 +113,16 @@ tr:hover td { background: #161a22; }
 .tag.no { background: var(--bad-bg); color: #f0a0a0; }
 .tag.unclear { background: #2a2f3a; color: var(--muted); }
 .tag.maybe { background: var(--warn-bg); color: var(--warn); }
+
+.callsel { background: #0d0f14; color: var(--muted); border: 1px solid var(--line-2); border-radius: 6px; padding: 3px 5px; font-size: 11px; cursor: pointer; }
+.callsel.cs-called { border-color: #2b3a5a; color: #8db4ff; }
+.callsel.cs-interested { border-color: #2c5238; color: var(--good); }
+.callsel.cs-not-interested { border-color: #5c3232; color: #f0a0a0; }
+.callsel.cs-follow-up { border-color: #5a4a2a; color: var(--warn); }
+.notein { background: #0d0f14; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; font-size: 11px; width: 120px; }
+.notein:focus { outline: none; border-color: var(--accent); }
+td a { color: #9ec1ff; text-decoration: none; }
+td a:hover { text-decoration: underline; }
 .tag.status-done { background: var(--good-bg); color: var(--good); }
 .tag.status-pending { background: #2a2f3a; color: var(--muted); }
 .tag.status-running, .tag.status-resolving { background: #1f2b40; color: #8db4ff; }

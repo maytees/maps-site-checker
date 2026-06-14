@@ -74,14 +74,20 @@ Change or add your own; instruction + checks are remembered between runs. (If yo
 - **Skip duplicates** (on): drops repeated phone numbers or website domains.
 - **Resolve from Maps link** (on): see below.
 
-**4. Run & export** — press **Scan**. Each row runs live (progress bar + per-row status). The **Lead** column says **✓ call / maybe / skip** based on your Wants (a temporarily/permanently closed business is never a "call"). When done:
+**4. Run & export** — press **Scan**. Each row runs live (progress bar + per-row status). The **Lead** column says **✓ call / maybe / skip** based on your Wants (a temporarily/permanently closed business is never a "call").
 
-- **⬇ Export CSV** — columns: lead, name, phone, city, website, business_status, your check columns, business_type, confidence, ai_notes, status, maps_link.
-- **⧉ Copy for Sheets** — tab-separated; paste straight into Google Sheets as cells.
+- **Re-run maybes** — if the model was unsure on some rows, a **↻ Re-run N maybes with [model]** button appears. Pick a bigger/more-accurate model (e.g. `qwen2.5:7b` or `qwen2.5:14b`) and it re-scans **only** the `maybe` rows — fast triage without paying the big model on the whole list.
+- **⬇ Export CSV** / **⧉ Copy for Sheets** — columns: lead, call_status, name, phone, email, city, website, business_status, your checks, team_size, locations, business_type, confidence, ai_notes, my_notes, instagram, facebook, other_emails, status, maps_link.
 
 In Sheets, filter `lead = yes` for your call list (or `maybe` to review the unsure ones).
 
-**What it grabs from the Maps listing**, on top of the website: the **phone number** (only if your CSV row didn't already have one) and whether the place is **temporarily/permanently closed** (shown in the Open? column and `business_status`).
+**Working the list (built-in CRM).** Each row has a **Call** dropdown (new / called / interested / not interested / follow up) and a **My notes** field. These are **saved in your browser and keyed to the business** (by website domain, else phone) — so when you re-import the same CSV (or a fresh scrape of the same area) your statuses and notes come back. Phone is click-to-call, email is click-to-mail, site/maps are clickable.
+
+**Extra fields it pulls automatically:**
+- **Email + socials** — scraped from the site (mailto links, contact page, de-obfuscated `info [at] …`, Instagram/Facebook). Blank when a site only has a contact form. Turns the call list into a call-*and*-email list.
+- **team_size / locations** — the AI's read on solo vs small-team vs large, and single vs multiple locations (Petzio fit signal).
+- **Phone** from the Maps listing if your row was missing one (placeholders like `-` / `N/A` count as missing). US numbers are formatted `(xxx) xxx-xxxx`.
+- **Open?** — temporarily / permanently closed, read from the Maps listing.
 
 ## Resolving websites from Google Maps links
 
@@ -127,6 +133,7 @@ For every site it fetches the homepage, reads `sitemap.xml`, and then follows th
 - **Parallel** number (1–10, default 4) = how many businesses run at once. Higher is faster but heavier; 4–6 is a good range on this Mac.
 - Run the **production build** (`bun run build && bun run start`), not `bun run dev` — noticeably faster.
 - Start Ollama with `OLLAMA_NUM_PARALLEL=4` so it answers several scans at once instead of queuing them.
+- The app sends `keep_alive: 30m` so the model stays loaded in RAM/VRAM for the whole run — no per-row reload. (First scan still pays a one-time load.)
 - Resolving from Maps links is the slow part; once you scrape the **site** field in the extension, that step disappears.
 
 ## Notes

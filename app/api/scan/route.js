@@ -34,7 +34,7 @@ export async function POST(req) {
   if (!result.ok) { warn('scan', `✗ ${name}: ai-error (${result.error})`); return json({ ok: false, status: 'ai-error', finalUrl: site.finalUrl, error: result.error }, 200); }
 
   const secs = ((Date.now() - t0) / 1000).toFixed(1);
-  log('scan', `✓ ${name} done in ${secs}s →`, result.verdict);
+  log('scan', `✓ ${name} done in ${secs}s →`, result.verdict, site.email ? `· email ${site.email}` : '');
   return json({
     ok: true,
     status: 'done',
@@ -42,6 +42,10 @@ export async function POST(req) {
     pages: site.pages,
     pageUrls: site.pageUrls,
     verdict: result.verdict,
+    email: site.email,
+    emails: site.emails,
+    socials: site.socials,
+    sitePhone: site.sitePhone,
   });
 }
 

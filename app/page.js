@@ -45,6 +45,28 @@ function cityFromAddress(v) {
 }
 function isMapsLink(v) { return /google\.[a-z.]+\/maps|goo\.gl\/maps|maps\.app\.goo\.gl/i.test(String(v || '')); }
 
+// treat "-", "N/A", "·", etc. as an empty phone so the Maps resolver fills it
+function isBlankPhone(v) {
+  const s = String(v || '').trim();
+  return !s || /^[\s\-–—·•|/.]+$/.test(s) || /^(n\/?a|none|null|tbd|n\.a\.?|-)$/i.test(s);
+}
+function fmtPhone(v) {
+  if (!v) return '';
+  let n = String(v).replace(/[^\d+]/g, '');
+  if (n.startsWith('+1')) n = n.slice(2);
+  else if (n.length === 11 && n.startsWith('1')) n = n.slice(1);
+  if (/^\d{10}$/.test(n)) return `(${n.slice(0, 3)}) ${n.slice(3, 6)}-${n.slice(6)}`;
+  return String(v).trim(); // non-US / unknown → leave as-is
+}
+
+// stable key for the per-lead CRM store (survives re-import): domain > phone > maps > name+city
+const CRM_LS = 'maps-site-checker.crm.v1';
+const CALL_STATUSES = ['new', 'called', 'interested', 'not interested', 'follow up'];
+function crmKey(r) {
+  return domainOf(r.finalUrl || r.website) || normPhone(r.phone) || (r.maps || '').slice(0, 80) ||
+    ((r.name || '') + '|' + (r.city || '')).toLowerCase();
+}
+
 // Is this row a good lead? Uses each check's `want`; closed businesses are never a lead.
 function leadOf(checks, r) {
   if (!r.verdict) return '';
@@ -122,9 +144,24 @@ export default function Page() {
   const [done, setDone] = useState(0);
   const [runStart, setRunStart] = useState(0);
   const [runEnd, setRunEnd] = useState(0);
+  const [runTotal, setRunTotal] = useState(0);
   const [, setTick] = useState(0); // forces a re-render every second while running
   const [hideBox, setHideBox] = useState(false);
+  const [crm, setCrm] = useState({});       // { key: { status, notes } } — persisted, survives re-import
+  const [maybeModel, setMaybeModel] = useState('');
   const stopRef = useRef(false);
+
+  // load the CRM store once
+  useEffect(() => {
+    try { setCrm(JSON.parse(localStorage.getItem(CRM_LS) || '{}')); } catch { /* ignore */ }
+  }, []);
+  function setCrmField(key, field, value) {
+    setCrm((prev) => {
+      const next = { ...prev, [key]: { ...prev[key], [field]: value } };
+      try { localStorage.setItem(CRM_LS, JSON.stringify(next)); } catch { /* ignore */ }
+      return next;
+    });
+  }
 
   // tick the clock while a run is in progress
   useEffect(() => {
@@ -163,6 +200,7 @@ export default function Page() {
       setModels(r.models);
       setOllama({ state: 'up', error: '' });
       setModel((m) => m && r.models.includes(m) ? m : (r.models.find((x) => /qwen2\.5/.test(x)) || r.models[0] || ''));
+      setMaybeModel((m) => m && r.models.includes(m) ? m : (r.models.find((x) => /14b/.test(x)) || r.models.find((x) => /qwen2\.5:7b/.test(x)) || r.models[0] || ''));
     } catch (e) {
       setOllama({ state: 'down', error: String(e) });
     }
@@ -217,7 +255,8 @@ export default function Page() {
       const realSite = domainOf(websiteRaw) ? websiteRaw.trim() : '';
       const mapsUrl = (mapsRaw.trim() || (isMapsLink(websiteRaw) ? websiteRaw.trim() : ''));
       const dom = domainOf(realSite);
-      const ph = normPhone(phoneRaw);
+      const phoneClean = isBlankPhone(phoneRaw) ? '' : phoneRaw.trim();
+      const ph = normPhone(phoneClean);
       if (dedupe) {
         const dPhone = ph && seenPhone.has(ph);
         const dDom = dom && seenDomain.has(dom);
@@ -227,11 +266,13 @@ export default function Page() {
       }
       out.push({
         name,
-        phone: phoneRaw.trim(),
+        phone: phoneClean,
         city: cityFromAddress(cityaddr),
         website: realSite,
         maps: mapsUrl,
         businessStatus: '',
+        email: '',
+        socials: {},
         status: 'pending',
         verdict: null,
         error: '',
@@ -240,17 +281,22 @@ export default function Page() {
     return { rows: out, dupCount };
   }
 
+  function getCleanChecks() {
+    return checks
+      .map((c) => ({ key: (c.key || '').trim().replace(/[^a-z0-9_]+/gi, '_').toLowerCase(), question: (c.question || '').trim() }))
+      .filter((c) => c.key && c.question);
+  }
+
   async function run() {
     if (map.website < 0 && map.maps < 0) { alert('Map a Website column, or a Google Maps link column to resolve from (step 2).'); return; }
     if (!model) { alert('Pick a model (step 3). Is Ollama running?'); return; }
-    const cleanChecks = checks
-      .map((c) => ({ key: (c.key || '').trim().replace(/[^a-z0-9_]+/gi, '_').toLowerCase(), question: (c.question || '').trim() }))
-      .filter((c) => c.key && c.question);
+    const cleanChecks = getCleanChecks();
     if (!cleanChecks.length) { alert('Add at least one check (step 3).'); return; }
 
     const { rows, dupCount } = buildRows();
     setResults(rows.map((r) => ({ ...r })));
     setDone(0);
+    setRunTotal(rows.length);
     setRunStart(Date.now());
     setRunEnd(0);
     setRunning(true);
@@ -307,7 +353,18 @@ export default function Page() {
         }
         setResults((prev) => {
           const c = prev.slice();
-          c[i] = { ...c[i], phone, status: res.status || (res.ok ? 'done' : 'error'), verdict: res.verdict || null, error: res.error || '', finalUrl: res.finalUrl || website };
+          c[i] = {
+            ...c[i],
+            phone: phone || res.sitePhone || '',
+            status: res.status || (res.ok ? 'done' : 'error'),
+            verdict: res.verdict || null,
+            error: res.error || '',
+            finalUrl: res.finalUrl || website,
+            email: res.email || '',
+            emails: res.emails || [],
+            socials: res.socials || {},
+            sitePhone: res.sitePhone || '',
+          };
           return c;
         });
         finished++;
@@ -323,15 +380,69 @@ export default function Page() {
 
   function stop() { stopRef.current = true; }
 
+  // Re-scan only the rows the AI was unsure about, using a bigger model.
+  async function rerunMaybes() {
+    if (!results || running) return;
+    const cleanChecks = getCleanChecks();
+    if (!cleanChecks.length) return;
+    const mdl = maybeModel || model;
+    const idxs = results.map((r, i) => [r, i]).filter(([r]) => leadOf(checks, r) === 'maybe' && (r.finalUrl || r.website)).map(([, i]) => i);
+    if (!idxs.length) { alert('No "maybe" rows with a website to re-run.'); return; }
+
+    setDone(0);
+    setRunTotal(idxs.length);
+    setRunStart(Date.now());
+    setRunEnd(0);
+    setRunning(true);
+    setHideBox(false);
+    stopRef.current = false;
+
+    let next = 0, finished = 0;
+    const worker = async () => {
+      while (!stopRef.current) {
+        const k = next++;
+        if (k >= idxs.length) break;
+        const i = idxs[k];
+        const row = results[i];
+        const website = row.finalUrl || row.website;
+        setResults((prev) => { const c = prev.slice(); c[i] = { ...c[i], status: 'running' }; return c; });
+        let res;
+        try {
+          res = await fetch('/api/scan', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ website, businessName: row.name, model: mdl, instruction, checks: cleanChecks }),
+          }).then((x) => x.json());
+        } catch (e) { res = { ok: false, status: 'error', error: String(e) }; }
+        setResults((prev) => {
+          const c = prev.slice();
+          c[i] = { ...c[i], status: res.status || (res.ok ? 'done' : 'error'), verdict: res.verdict || c[i].verdict, error: res.error || '',
+            email: res.email || c[i].email, socials: res.socials || c[i].socials, phone: c[i].phone || res.sitePhone || '' };
+          return c;
+        });
+        finished++; setDone(finished);
+      }
+    };
+    const n = Math.max(1, Math.min(10, concurrency));
+    await Promise.all(Array.from({ length: n }, worker));
+    setRunEnd(Date.now());
+    setRunning(false);
+  }
+
   // ---------- export ----------
   const exportCols = () => {
     const ck = checks.map((c) => c.key).filter(Boolean);
-    return ['lead', 'name', 'phone', 'city', 'website', 'business_status', ...ck, 'business_type', 'confidence', 'ai_notes', 'status', 'maps_link'];
+    return ['lead', 'call_status', 'name', 'phone', 'email', 'city', 'website', 'business_status',
+      ...ck, 'team_size', 'locations', 'business_type', 'confidence', 'ai_notes', 'my_notes',
+      'instagram', 'facebook', 'other_emails', 'status', 'maps_link'];
   };
   function rowValues(r) {
     const v = r.verdict || {};
-    const ck = checks.map((c) => c.key).filter(Boolean).map((k) => v[k] || '');
-    return [leadOf(checks, r), r.name, r.phone, r.city, r.finalUrl || r.website, r.businessStatus || '', ...ck, v.business_type || '', v.confidence || '', v.notes || '', r.status, r.maps];
+    const c = crm[crmKey(r)] || {};
+    const s = r.socials || {};
+    const ck = checks.map((x) => x.key).filter(Boolean).map((k) => v[k] || '');
+    return [leadOf(checks, r), c.status || 'new', r.name, fmtPhone(r.phone), r.email || '', r.city, r.finalUrl || r.website, r.businessStatus || '',
+      ...ck, v.team_size || '', v.locations || '', v.business_type || '', v.confidence || '', v.notes || '', c.notes || '',
+      s.instagram || '', s.facebook || '', (r.emails || []).slice(1).join(' '), r.status, r.maps];
   }
   function exportCSV() {
     if (!results) return;
@@ -360,7 +471,8 @@ export default function Page() {
 
   // ---------- derived ----------
   const counts = results ? results.reduce((a, r) => { a[r.status] = (a[r.status] || 0) + 1; return a; }, {}) : {};
-  const total = results ? results.length : 0;
+  const total = runTotal || (results ? results.length : 0);
+  const maybeCount = results ? results.filter((r) => leadOf(checks, r) === 'maybe').length : 0;
   const elapsedMs = runStart ? (runEnd || Date.now()) - runStart : 0;
   const ratePerMin = elapsedMs > 1000 ? done / (elapsedMs / 60000) : 0;
   const remaining = total - done;
@@ -485,6 +597,16 @@ export default function Page() {
           {msg && <span className="pill ok">{msg}</span>}
         </div>
 
+        {results && maybeCount > 0 &&
+          <div className="row mt small" style={{ gap: 8 }}>
+            <span className="muted">Unsure rows?</span>
+            <button onClick={rerunMaybes} disabled={running}>↻ Re-run {maybeCount} maybe{maybeCount === 1 ? '' : 's'} with</button>
+            <select style={{ width: 150 }} value={maybeModel} onChange={(e) => setMaybeModel(e.target.value)}>
+              {models.map((m) => <option key={m} value={m}>{m}</option>)}
+            </select>
+            <span className="muted tiny">a bigger model is more accurate, just slower</span>
+          </div>}
+
         {results &&
           <>
             <div className="bar"><i style={{ width: total ? `${(done / total) * 100}%` : 0 }} /></div>
@@ -497,7 +619,7 @@ export default function Page() {
             <div className="row mt small muted" style={{ gap: 14 }}>
               {Object.entries(counts).map(([k, v]) => <span key={k}><StatusTag status={k} /> {v}</span>)}
             </div>
-            <ResultsTable results={results} checks={checks} />
+            <ResultsTable results={results} checks={checks} crm={crm} onCrm={setCrmField} />
           </>}
       </section>
 
@@ -571,33 +693,54 @@ function OpenCell({ s }) {
   return <span className="tag no">{s === 'permanently_closed' ? 'closed' : 'temp closed'}</span>;
 }
 
-function ResultsTable({ results, checks }) {
+function SizeCell({ v }) {
+  const t = v.team_size, l = v.locations;
+  if (!t && !l) return <span className="muted">—</span>;
+  const tl = { solo: 'solo', small_team: 'team', large_team: 'big', '': '' };
+  return <span className="muted tiny">{tl[t] || ''}{t && l ? ' · ' : ''}{l === 'multiple' ? 'multi' : l === 'single' ? '1 loc' : ''}</span>;
+}
+
+function ResultsTable({ results, checks, crm, onCrm }) {
   const cks = checks.filter((c) => c.key);
   return (
     <div className="tbl-wrap">
       <table>
         <thead>
           <tr>
-            <th>Lead</th><th>Name</th><th>Phone</th><th>City</th><th>Site</th><th>Open?</th>
+            <th>Lead</th><th>Call</th><th>Name</th><th>Phone</th><th>Email</th><th>City</th><th>Site</th><th>Open?</th>
             {cks.map((c) => <th key={c.key}>{c.key}</th>)}
-            <th>type</th><th>Status</th><th>Notes</th>
+            <th>size</th><th>type</th><th>Status</th><th>AI note</th><th>My notes</th>
           </tr>
         </thead>
         <tbody>
           {results.map((r, i) => {
             const v = r.verdict || {};
+            const key = crmKey(r);
+            const cr = crm[key] || {};
+            const dom = domainOf(r.finalUrl || r.website);
+            const s = r.socials || {};
             return (
               <tr key={i}>
                 <td><LeadTag lead={leadOf(checks, r)} /></td>
+                <td>
+                  <select className={'callsel cs-' + (cr.status || 'new').replace(/\s/g, '-')} value={cr.status || 'new'} onChange={(e) => onCrm(key, 'status', e.target.value)}>
+                    {CALL_STATUSES.map((s2) => <option key={s2} value={s2}>{s2}</option>)}
+                  </select>
+                </td>
                 <td title={r.finalUrl || r.website}>{r.name || <span className="muted">—</span>}</td>
-                <td>{r.phone}</td>
+                <td>{r.phone ? <a href={`tel:${r.phone}`}>{fmtPhone(r.phone)}</a> : <span className="muted">—</span>}</td>
+                <td>{r.email
+                  ? <span><a href={`mailto:${r.email}`}>{r.email.length > 22 ? r.email.slice(0, 21) + '…' : r.email}</a>{s.instagram ? <a href={s.instagram} target="_blank" rel="noreferrer" title="Instagram"> ◎</a> : null}</span>
+                  : (s.instagram || s.facebook) ? <a href={s.instagram || s.facebook} target="_blank" rel="noreferrer" className="muted">social↗</a> : <span className="muted">—</span>}</td>
                 <td>{r.city}</td>
-                <td className="muted">{domainOf(r.finalUrl || r.website) || (r.maps ? <span title={r.maps}>maps↗</span> : '')}</td>
+                <td className="muted">{dom ? <a href={r.finalUrl || r.website} target="_blank" rel="noreferrer">{dom}</a> : (r.maps ? <a href={r.maps} target="_blank" rel="noreferrer" title={r.maps}>maps↗</a> : '')}</td>
                 <td><OpenCell s={r.businessStatus} /></td>
                 {cks.map((c) => <td key={c.key}><Verdict v={v[c.key]} want={c.want} /></td>)}
+                <td><SizeCell v={v} /></td>
                 <td className="muted">{v.business_type || ''}</td>
                 <td><StatusTag status={r.status} /></td>
-                <td className="wrap-cell">{v.notes || r.error || ''}</td>
+                <td className="wrap-cell" title={v.notes || r.error || ''}>{(v.notes || r.error || '').slice(0, 70)}</td>
+                <td><input className="notein" value={cr.notes || ''} placeholder="…" onChange={(e) => onCrm(key, 'notes', e.target.value)} /></td>
               </tr>
             );
           })}
