@@ -123,6 +123,7 @@ export default function Page() {
   const [runStart, setRunStart] = useState(0);
   const [runEnd, setRunEnd] = useState(0);
   const [, setTick] = useState(0); // forces a re-render every second while running
+  const [hideBox, setHideBox] = useState(false);
   const stopRef = useRef(false);
 
   // tick the clock while a run is in progress
@@ -253,6 +254,7 @@ export default function Page() {
     setRunStart(Date.now());
     setRunEnd(0);
     setRunning(true);
+    setHideBox(false);
     stopRef.current = false;
 
     let next = 0;
@@ -363,6 +365,8 @@ export default function Page() {
   const ratePerMin = elapsedMs > 1000 ? done / (elapsedMs / 60000) : 0;
   const remaining = total - done;
   const etaMs = ratePerMin > 0 && remaining > 0 ? (remaining / ratePerMin) * 60000 : 0;
+  const leads = results ? results.filter((r) => leadOf(checks, r) === 'yes').length : 0;
+  const inProg = results ? results.filter((r) => r.status === 'running' || r.status === 'resolving') : [];
 
   // ---------- render ----------
   return (
@@ -496,6 +500,30 @@ export default function Page() {
             <ResultsTable results={results} checks={checks} />
           </>}
       </section>
+
+      {results && !hideBox &&
+        <ActivityBox running={running} inProg={inProg} done={done} total={total} leads={leads} rate={ratePerMin} onClose={() => setHideBox(true)} />}
+    </div>
+  );
+}
+
+function ActivityBox({ running, inProg, done, total, leads, rate, onClose }) {
+  const nm = (r) => (r?.name || 'this business').slice(0, 28);
+  const more = inProg.length > 1 ? ` (+${inProg.length - 1} more)` : '';
+  let main;
+  if (running) {
+    const r = inProg[0];
+    if (!r) main = <><span className="spin" /> Starting…</>;
+    else if (r.status === 'resolving') main = <><span className="spin" /> 🔎 Finding website — {nm(r)}{more}</>;
+    else main = <><span className="spin" /> 🤖 Asking AI — {nm(r)}{more}</>;
+  } else {
+    main = <>✓ Finished scanning</>;
+  }
+  return (
+    <div className="activity">
+      <button className="a-close" title="hide" onClick={onClose}>✕</button>
+      <div className="a-main">{main}</div>
+      <div className="a-sub">{done}/{total} done · {leads} lead{leads === 1 ? '' : 's'}{rate ? ` · ${rate.toFixed(1)}/min` : ''}</div>
     </div>
   );
 }

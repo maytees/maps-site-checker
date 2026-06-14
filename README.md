@@ -94,6 +94,16 @@ Your earlier CSVs only have the Google Maps **link**, not the business website (
 
 The resolved site shows up in the **Site** column of the results so you can see what it found.
 
+## Watching it work
+
+- **Bottom-right box** (in the browser): plain-English live status — "🔎 Finding website — Sunny Paws", "🤖 Asking AI — Sunny Paws", plus `done/total · N leads · rate/min`. Click ✕ to hide.
+- **Terminal** (where you ran `bun run start`): full per-business trace, color-coded —
+  - `[scan]` business started / finished (+ total seconds)
+  - `[site]` how many pages were read + the keyword signals found (e.g. `{webcam:8, boarding:41}`)
+  - `[llm]` the exact ask (model, which checks, input size, hints) and the reply (seconds, tokens, **tok/s**, raw JSON)
+  - `[resolve]` Maps-link → website/phone/closed
+  - This is the place to watch tok/s and compare model speeds.
+
 ## How it reads each website
 
 For every site it fetches the homepage, reads `sitemap.xml`, and then follows the most relevant inner pages **in parallel** — boarding, services, amenities, about, pricing, and anything that looks webcam-related (this is why a vet that hides "boarding" on a `/services` page is now caught). It strips all those pages to text, runs a keyword pre-scan for webcam/boarding/vet/team signals, and hands the lot to the model with those signals as hints. The model is told to read every page and only say `unclear` when the text truly doesn't say.
