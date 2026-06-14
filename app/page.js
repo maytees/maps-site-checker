@@ -143,7 +143,9 @@ export default function Page() {
   const [resolveConc, setResolveConc] = useState(2);     // Maps lookups in parallel (captcha-sensitive)
   const [resolveGap, setResolveGap] = useState(1100);    // ms between Maps lookups
   const [useChrome, setUseChrome] = useState(false);     // use real Chrome profile instead of headless
-  const resolveOpts = () => ({ resolveConcurrency: resolveConc, resolveGap, browserMode: useChrome ? 'chrome' : 'headless' });
+  const [retrySecs, setRetrySecs] = useState(30);        // captcha'd rows are retried this often
+  const [retryMsg, setRetryMsg] = useState('');          // live "retrying in Ns" status
+  const resolveOpts = () => ({ resolveConcurrency: resolveConc, resolveGap, browserMode: useChrome ? 'chrome' : 'headless', resolveCooldown: Math.max(0, retrySecs) * 1000 });
 
   const [results, setResults] = useState(null); // [{name,phone,city,website,maps,status,verdict,error}]
   const [running, setRunning] = useState(false);
@@ -206,6 +208,7 @@ export default function Page() {
       if (c.resolveConc) setResolveConc(c.resolveConc);
       if (typeof c.resolveGap === 'number') setResolveGap(c.resolveGap);
       if (typeof c.useChrome === 'boolean') setUseChrome(c.useChrome);
+      if (c.retrySecs) setRetrySecs(c.retrySecs);
       if (c.model) setModel(c.model);
     } catch {}
     refreshModels();
@@ -215,10 +218,10 @@ export default function Page() {
   // persist config
   useEffect(() => {
     const t = setTimeout(() => {
-      localStorage.setItem(LS, JSON.stringify({ instruction, checks, dedupe, resolveMaps, aiPick, verifyWebsite, concurrency, resolveConc, resolveGap, useChrome, model }));
+      localStorage.setItem(LS, JSON.stringify({ instruction, checks, dedupe, resolveMaps, aiPick, verifyWebsite, concurrency, resolveConc, resolveGap, useChrome, retrySecs, model }));
     }, 300);
     return () => clearTimeout(t);
-  }, [instruction, checks, dedupe, resolveMaps, aiPick, verifyWebsite, concurrency, resolveConc, resolveGap, useChrome, model]);
+  }, [instruction, checks, dedupe, resolveMaps, aiPick, verifyWebsite, concurrency, resolveConc, resolveGap, useChrome, retrySecs, model]);
 
   async function refreshModels() {
     setOllama({ state: 'checking', error: '' });
@@ -325,39 +328,96 @@ export default function Page() {
   }
 
   // Phase 1: open each Maps listing, replace the CSV website with the real one (+ phone/closed).
-  // Phase 2: de-dup on those VERIFIED websites & phones, marking duplicates row.skip.
+  // --- shared resolve/scan helpers (used by run, verify, and the captcha retry loops) ---
+
+  // Open the Maps listing, apply website/phone/closed to the row + results. Returns the raw rr.
+  async function resolveInto(i, row) {
+    setResults((prev) => { const c = prev.slice(); c[i] = { ...c[i], status: 'resolving' }; return c; });
+    let rr;
+    try {
+      rr = await fetch('/api/resolve', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mapsUrl: row.maps, noCache, ...resolveOpts() }),
+      }).then((x) => x.json());
+    } catch (e) { rr = { status: 'failed', error: String(e) }; }
+    if (rr.phone && !row.phone) row.phone = rr.phone;
+    if (rr.status === 'ok' && rr.website) { row.website = rr.website; row.finalUrl = rr.website; }
+    row.businessStatus = rr.businessStatus || row.businessStatus || '';
+    setResults((prev) => { const c = prev.slice(); c[i] = { ...c[i], phone: row.phone, website: row.website, finalUrl: row.finalUrl, businessStatus: row.businessStatus }; return c; });
+    return rr;
+  }
+
+  // Scan a website and write the verdict + contacts into results[i].
+  async function scanRow(i, row, website, cleanChecks) {
+    setResults((prev) => { const c = prev.slice(); c[i] = { ...c[i], status: 'running' }; return c; });
+    let res;
+    try {
+      res = await fetch('/api/scan', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ website, businessName: row.name, model, instruction, checks: cleanChecks, noCache, aiPick }),
+      }).then((x) => x.json());
+    } catch (e) { res = { ok: false, status: 'error', error: String(e) }; }
+    setResults((prev) => {
+      const c = prev.slice();
+      c[i] = { ...c[i], phone: row.phone || res.sitePhone || '', status: res.status || (res.ok ? 'done' : 'error'), verdict: applyUnsureRule(res.verdict) || null, error: res.error || '', finalUrl: res.finalUrl || website, email: res.email || '', emails: res.emails || [], socials: res.socials || {}, sitePhone: res.sitePhone || '', cached: res.cached || false };
+      return c;
+    });
+  }
+
+  // Sleep `secs`, showing a live countdown in retryMsg. Bails early if stopped.
+  async function waitRetry(secs, n) {
+    for (let s = secs; s > 0 && !stopRef.current; s--) {
+      setRetryMsg(`⏳ ${n} captcha'd — retrying in ${s}s`);
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+    setRetryMsg('');
+  }
+
+  // Phase 1: resolve every row's real website. Captcha'd rows aren't dropped —
+  // they're retried every `retrySecs` until they go through. Phase 2: de-dup on verified data.
   async function verifyAndDedup(rows) {
     setVTotalN(rows.filter((r) => r.maps).length);
     setVDoneN(0); setVCachedN(0); setVStart(Date.now()); setVEnd(0);
     let next = 0, vDone = 0, vCached = 0;
+    let blocked = [];
+    const tick = (rr) => { vDone++; setVDoneN(vDone); if (rr.cached) { vCached++; setVCachedN(vCached); } };
     const work = async () => {
       while (!stopRef.current) {
         const i = next++;
         if (i >= rows.length) break;
         const row = rows[i];
-        if (!row.maps) continue; // nothing to verify against
-        setResults((prev) => { const c = prev.slice(); c[i] = { ...c[i], status: 'resolving' }; return c; });
-        let rr;
-        try {
-          rr = await fetch('/api/resolve', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ mapsUrl: row.maps, noCache, ...resolveOpts() }),
-          }).then((x) => x.json());
-        } catch (e) { rr = { status: 'failed', error: String(e) }; }
-        if (rr.phone && !row.phone) row.phone = rr.phone;
-        if (rr.status === 'ok' && rr.website) { row.website = rr.website; row.finalUrl = rr.website; }
-        row.businessStatus = rr.businessStatus || row.businessStatus || '';
-        setResults((prev) => {
-          const c = prev.slice();
-          c[i] = { ...c[i], phone: row.phone, website: row.website, finalUrl: row.finalUrl, businessStatus: row.businessStatus, status: 'pending' };
-          return c;
-        });
-        vDone++; setVDoneN(vDone);
-        if (rr.cached) { vCached++; setVCachedN(vCached); }
+        if (!row.maps) continue;
+        const rr = await resolveInto(i, row);
+        if (rr.status === 'blocked') {
+          blocked.push(i);
+          setResults((prev) => { const c = prev.slice(); c[i] = { ...c[i], status: 'maps-blocked' }; return c; });
+        } else {
+          setResults((prev) => { const c = prev.slice(); c[i] = { ...c[i], status: 'pending' }; return c; });
+          tick(rr);
+        }
       }
     };
     const n = Math.max(1, Math.min(10, concurrency));
     await Promise.all(Array.from({ length: n }, work));
+
+    // retry the captcha'd ones every retrySecs until they all go through (or you stop)
+    while (blocked.length && !stopRef.current) {
+      await waitRetry(Math.max(5, retrySecs), blocked.length);
+      if (stopRef.current) break;
+      const still = [];
+      for (const i of blocked) {
+        if (stopRef.current) { still.push(i); continue; }
+        const rr = await resolveInto(i, rows[i]);
+        if (rr.status === 'blocked') {
+          still.push(i);
+          setResults((prev) => { const c = prev.slice(); c[i] = { ...c[i], status: 'maps-blocked' }; return c; });
+        } else {
+          setResults((prev) => { const c = prev.slice(); c[i] = { ...c[i], status: 'pending' }; return c; });
+          tick(rr);
+        }
+      }
+      blocked = still;
+    }
     setVEnd(Date.now());
 
     if (!dedupe) return;
@@ -404,80 +464,66 @@ export default function Page() {
     }
     setRunTotal(rows.filter((r) => !r.skip).length);
 
-    let next = 0;
-    let finished = 0;
+    const prog = { done: 0 };
+    const blocked = [];          // rows captcha'd while resolving — retried, never dropped
     const total = rows.length;
+
+    // resolve-if-needed then scan one row. Returns 'blocked' if the Maps lookup got captcha'd.
+    const processRow = async (i) => {
+      const row = rows[i];
+      let website = row.website;
+
+      const needResolve = resolveMaps && row.maps && (!website || !row.phone);
+      if (needResolve) {
+        const rr = await resolveInto(i, row);
+        website = row.website;
+        if (rr.status === 'blocked' && !website) {
+          setResults((prev) => { const c = prev.slice(); c[i] = { ...c[i], status: 'maps-blocked', error: rr.error || '' }; return c; });
+          return 'blocked';
+        }
+        if (!website) {
+          const st = rr.status === 'none' ? 'no-website' : 'resolve-failed';
+          setResults((prev) => { const c = prev.slice(); c[i] = { ...c[i], status: st, error: rr.error || '' }; return c; });
+          prog.done++; setDone(prog.done); return 'done';
+        }
+      }
+      if (!website) {
+        setResults((prev) => { const c = prev.slice(); c[i] = { ...c[i], status: row.maps ? 'maps-only' : 'no-website' }; return c; });
+        prog.done++; setDone(prog.done); return 'done';
+      }
+      await scanRow(i, row, website, cleanChecks);
+      prog.done++; setDone(prog.done); return 'done';
+    };
+
+    let next = 0;
     const worker = async () => {
       while (!stopRef.current) {
         const i = next++;
         if (i >= total) break;
-        const row = rows[i];
-        if (row.skip) continue; // verified duplicate — don't scan
-        let website = row.website;
-        let phone = row.phone;
-
-        // Step A — open the Maps listing to get website (if missing), phone (if missing), and open/closed.
-        const needResolve = resolveMaps && row.maps && (!website || !phone);
-        if (needResolve) {
-          setResults((prev) => { const c = prev.slice(); c[i] = { ...c[i], status: 'resolving' }; return c; });
-          let rr;
-          try {
-            rr = await fetch('/api/resolve', {
-              method: 'POST', headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ mapsUrl: row.maps, noCache, ...resolveOpts() }),
-            }).then((x) => x.json());
-          } catch (e) { rr = { status: 'failed', error: String(e) }; }
-          if (rr.phone && !phone) phone = rr.phone;
-          if (rr.status === 'ok' && rr.website) website = rr.website;
-          setResults((prev) => { const c = prev.slice(); c[i] = { ...c[i], phone, website: website || c[i].website, businessStatus: rr.businessStatus || c[i].businessStatus }; return c; });
-          if (!website) {
-            const st = rr.status === 'blocked' ? 'maps-blocked' : rr.status === 'none' ? 'no-website' : 'resolve-failed';
-            setResults((prev) => { const c = prev.slice(); c[i] = { ...c[i], status: st, error: rr.error || '' }; return c; });
-            finished++; setDone(finished); continue;
-          }
-        }
-        if (!website) {
-          setResults((prev) => { const c = prev.slice(); c[i] = { ...c[i], status: row.maps ? 'maps-only' : 'no-website' }; return c; });
-          finished++; setDone(finished); continue;
-        }
-
-        // Step B — scan the website.
-        setResults((prev) => { const c = prev.slice(); c[i] = { ...c[i], status: 'running' }; return c; });
-        let res;
-        try {
-          res = await fetch('/api/scan', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ website, businessName: row.name, model, instruction, checks: cleanChecks, noCache, aiPick }),
-          }).then((x) => x.json());
-        } catch (e) {
-          res = { ok: false, status: 'error', error: String(e) };
-        }
-        setResults((prev) => {
-          const c = prev.slice();
-          c[i] = {
-            ...c[i],
-            phone: phone || res.sitePhone || '',
-            status: res.status || (res.ok ? 'done' : 'error'),
-            verdict: applyUnsureRule(res.verdict) || null,
-            error: res.error || '',
-            finalUrl: res.finalUrl || website,
-            email: res.email || '',
-            emails: res.emails || [],
-            socials: res.socials || {},
-            sitePhone: res.sitePhone || '',
-            cached: res.cached || false,
-          };
-          return c;
-        });
-        finished++;
-        setDone(finished);
+        if (rows[i].skip) continue; // verified duplicate — don't scan
+        const r = await processRow(i);
+        if (r === 'blocked') blocked.push(i);
       }
     };
     const n = Math.max(1, Math.min(10, concurrency));
     await Promise.all(Array.from({ length: n }, worker));
+
+    // retry captcha'd rows every retrySecs until they go through (or you stop)
+    while (blocked.length && !stopRef.current) {
+      await waitRetry(Math.max(5, retrySecs), blocked.length);
+      if (stopRef.current) break;
+      const still = [];
+      for (const i of blocked) {
+        if (stopRef.current) { still.push(i); continue; }
+        const r = await processRow(i);
+        if (r === 'blocked') still.push(i);
+      }
+      blocked.length = 0; blocked.push(...still);
+    }
+
     setRunEnd(Date.now());
     setRunning(false);
+    setRetryMsg('');
     refreshCache();
     if (dupCount) console.log(`Skipped ${dupCount} duplicate rows.`);
   }
@@ -705,6 +751,9 @@ export default function Page() {
             <label className="row" style={{ gap: 5 }} title="Pause between Maps lookups. Higher = politer.">
               delay <input type="number" min={0} step={100} value={resolveGap} style={{ width: 66 }} onChange={(e) => setResolveGap(Math.max(0, +e.target.value || 0))} /> ms
             </label>
+            <label className="row" style={{ gap: 5 }} title="Captcha'd lookups aren't dropped — they're retried this often until they go through.">
+              retry captcha'd every <input type="number" min={5} step={5} value={retrySecs} style={{ width: 54 }} onChange={(e) => setRetrySecs(Math.max(5, +e.target.value || 30))} /> s
+            </label>
             <label className="row" style={{ gap: 6 }} title="Opens a real Chrome window instead of headless. Sign into Google once in it — logged-in Chrome gets captcha'd far less.">
               <input type="checkbox" checked={useChrome} onChange={(e) => setUseChrome(e.target.checked)} /> use my real Chrome
             </label>
@@ -775,7 +824,8 @@ export default function Page() {
               <span className="pill" title="elapsed time">⏱ {fmtDur(elapsedMs)}</span>
               <span className="pill" title="real scans per minute (excludes instant cache hits)">⚡ {ratePerMin ? ratePerMin.toFixed(1) : '—'}/min</span>
               {cachedCount > 0 && <span className="pill" title="served instantly from the saved cache">♻ {cachedCount} cached</span>}
-              {running && etaMs > 0 && <span className="pill" title="estimated time left">⏳ ~{fmtDur(etaMs)} left</span>}
+              {retryMsg && <span className="pill" style={{ background: 'var(--warn-bg)', color: 'var(--warn)', borderColor: '#5a4a2a' }}>{retryMsg}</span>}
+              {running && !retryMsg && etaMs > 0 && <span className="pill" title="estimated time left">⏳ ~{fmtDur(etaMs)} left</span>}
             </div>
             <div className="statbar">
               <Stat n={leads} label="✓ call" cls="s-yes" />
