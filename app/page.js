@@ -502,9 +502,12 @@ export default function Page() {
   const phoneCount = results ? results.filter((r) => r.phone).length : 0;
   const cachedCount = results ? results.filter((r) => r.cached).length : 0;
   const elapsedMs = runStart ? (runEnd || Date.now()) - runStart : 0;
-  const ratePerMin = elapsedMs > 1000 ? done / (elapsedMs / 60000) : 0;
+  // rate = REAL scans per minute (cached hits are ~instant and would inflate it)
+  const realDone = Math.max(0, done - cachedCount);
+  const ratePerMin = elapsedMs > 1000 && realDone > 0 ? realDone / (elapsedMs / 60000) : 0;
   const remaining = total - done;
-  const etaMs = ratePerMin > 0 && remaining > 0 ? (remaining / ratePerMin) * 60000 : 0;
+  const cachedFrac = done > 0 ? cachedCount / done : 0;     // assume remaining have a similar cached share
+  const etaMs = ratePerMin > 0 && remaining > 0 ? ((remaining * (1 - cachedFrac)) / ratePerMin) * 60000 : 0;
   const leads = results ? results.filter((r) => leadOf(checks, r) === 'yes').length : 0;
   const inProg = results ? results.filter((r) => r.status === 'running' || r.status === 'resolving') : [];
 
@@ -654,7 +657,7 @@ export default function Page() {
             <div className="row mt small" style={{ gap: 14 }}>
               <span className="pill">{done}/{total} done</span>
               <span className="pill" title="elapsed time">⏱ {fmtDur(elapsedMs)}</span>
-              <span className="pill" title="businesses per minute">⚡ {ratePerMin ? ratePerMin.toFixed(1) : '—'}/min</span>
+              <span className="pill" title="real scans per minute (excludes instant cache hits)">⚡ {ratePerMin ? ratePerMin.toFixed(1) : '—'}/min</span>
               {cachedCount > 0 && <span className="pill" title="served instantly from the saved cache">♻ {cachedCount} cached</span>}
               {running && etaMs > 0 && <span className="pill" title="estimated time left">⏳ ~{fmtDur(etaMs)} left</span>}
             </div>
