@@ -103,7 +103,7 @@ Your earlier CSVs only have the Google Maps **link**, not the business website (
 - **parallel** (default 2) — how many Maps listings open at once. Drop to **1** if you're getting captcha'd.
 - **delay** (default 1100 ms) — pause between lookups. Raise it (e.g. 2500) to be politer.
 - **retry captcha'd every __ s** (default 30) — a listing that gets captcha'd is **never dropped**. The run keeps going on the others, then retries the blocked ones on this interval until they go through (live countdown shown). Stop ends it.
-- **use my real Chrome** — opens a real Chrome window (persistent profile under `data/chrome-profile`) instead of headless. **Sign into Google in that window once** and it's remembered — a logged-in real Chrome gets captcha'd far less. Needs Chrome installed.
+- **use my real Chrome** — opens a real Chrome window (persistent profile under `data/chrome-profile`) instead of headless. **Sign into Google in that window once** and it's remembered — a logged-in real Chrome gets captcha'd far less. Needs Chrome installed. If a captcha *does* appear, the window comes to the front and **waits up to 5 minutes for you to solve it by hand**, then carries on with that listing (no row is lost). Use **parallel 1** so captchas come one at a time.
 - Already-resolved listings are **cached forever** (keyed by the Maps URL), so re-runs never re-hit Google for them. Splitting a big list into smaller runs lets each cache.
 - Best of all: scrape the **site** (and phone) field in the Table Scraper extension so the CSV already has them — then no Maps lookups happen at all.
 - Going forward, if you pick the **site** field in the extension while scraping, the website is already in the CSV and this step is skipped.
