@@ -98,6 +98,15 @@ select { cursor: pointer; }
 .check { display: grid; grid-template-columns: 150px 1fr 104px auto; gap: 8px; align-items: center; }
 .check input { width: 100%; }
 
+.statbar { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+.stat { background: var(--panel-2); border: 1px solid var(--line-2); border-radius: 11px; padding: 10px 16px; min-width: 78px; text-align: center; }
+.stat .n { font-size: 22px; font-weight: 750; line-height: 1; color: var(--text); }
+.stat .l { font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin-top: 4px; }
+.stat.s-yes .n { color: var(--good); }
+.stat.s-maybe .n { color: var(--warn); }
+.stat.s-no .n { color: #f0a0a0; }
+.stat.s-info .n { color: #9ec1ff; }
+
 .bar { height: 8px; background: var(--chip); border-radius: 5px; overflow: hidden; margin-top: 10px; }
 .bar i { display: block; height: 100%; width: 0; background: var(--good); transition: width .2s; }
 

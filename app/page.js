@@ -497,6 +497,9 @@ export default function Page() {
   const counts = results ? results.reduce((a, r) => { a[r.status] = (a[r.status] || 0) + 1; return a; }, {}) : {};
   const total = runTotal || (results ? results.length : 0);
   const maybeCount = results ? results.filter((r) => leadOf(checks, r) === 'maybe').length : 0;
+  const skipCount = results ? results.filter((r) => leadOf(checks, r) === 'no').length : 0;
+  const emailCount = results ? results.filter((r) => r.email).length : 0;
+  const phoneCount = results ? results.filter((r) => r.phone).length : 0;
   const cachedCount = results ? results.filter((r) => r.cached).length : 0;
   const elapsedMs = runStart ? (runEnd || Date.now()) - runStart : 0;
   const ratePerMin = elapsedMs > 1000 ? done / (elapsedMs / 60000) : 0;
@@ -655,6 +658,13 @@ export default function Page() {
               {cachedCount > 0 && <span className="pill" title="served instantly from the saved cache">♻ {cachedCount} cached</span>}
               {running && etaMs > 0 && <span className="pill" title="estimated time left">⏳ ~{fmtDur(etaMs)} left</span>}
             </div>
+            <div className="statbar">
+              <Stat n={leads} label="✓ call" cls="s-yes" />
+              <Stat n={maybeCount} label="~ maybe" cls="s-maybe" />
+              <Stat n={skipCount} label="skip" cls="s-no" />
+              <Stat n={emailCount} label="✉ emails" cls="s-info" />
+              <Stat n={phoneCount} label="☎ phones" cls="s-info" />
+            </div>
             <div className="row mt small muted" style={{ gap: 14 }}>
               {Object.entries(counts).map(([k, v]) => <span key={k}><StatusTag status={k} /> {v}</span>)}
             </div>
@@ -718,6 +728,15 @@ function Verdict({ v, want }) {
   let cls = 'unclear';
   if (want === 'yes' || want === 'no') cls = v === want ? 'yes' : v === oppose(want) ? 'no' : 'unclear';
   return <span className={`tag ${cls}`}>{v}</span>;
+}
+
+function Stat({ n, label, cls }) {
+  return (
+    <div className={'stat ' + cls}>
+      <div className="n">{n}</div>
+      <div className="l">{label}</div>
+    </div>
+  );
 }
 
 function LeadTag({ lead }) {
