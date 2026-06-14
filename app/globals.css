@@ -134,6 +134,8 @@ tr:hover td { background: #161a22; }
 .tag.no { background: var(--bad-bg); color: #f0a0a0; }
 .tag.unclear { background: #2a2f3a; color: var(--muted); }
 .tag.maybe { background: var(--warn-bg); color: var(--warn); }
+.tag.chain { background: #2a2440; color: #b9a3ff; }
+.stat.s-chain .n { color: #b9a3ff; }
 
 .callsel { background: #0d0f14; color: var(--muted); border: 1px solid var(--line-2); border-radius: 6px; padding: 3px 5px; font-size: 11px; cursor: pointer; }
 .callsel.cs-called { border-color: #2b3a5a; color: #8db4ff; }

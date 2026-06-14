@@ -45,6 +45,15 @@ function cityFromAddress(v) {
 }
 function isMapsLink(v) { return /google\.[a-z.]+\/maps|goo\.gl\/maps|maps\.app\.goo\.gl/i.test(String(v || '')); }
 
+// De-dup identity: the Google Maps LISTING is the business (chains/facebook share a
+// domain, so domain is a bad key). Fall back to phone, then domain, only if no link.
+function dedupKey(maps, phone, website) {
+  if (maps) return 'm:' + String(maps).trim().toLowerCase();
+  const ph = normPhone(phone); if (ph) return 'p:' + ph;
+  const d = domainOf(website); if (d) return 'd:' + d;
+  return '';
+}
+
 // treat "-", "N/A", "·", etc. as an empty phone so the Maps resolver fills it
 function isBlankPhone(v) {
   const s = String(v || '').trim();
@@ -273,8 +282,7 @@ export default function Page() {
   function buildRows(doDedup = dedupe) {
     const get = (i, r) => (i >= 0 && cols[i] ? cols[i][r] || '' : '');
     const out = [];
-    const seenPhone = new Set();
-    const seenDomain = new Set();
+    const seen = new Set();
     let dupCount = 0;
     for (let r = 0; r < rowCount; r++) {
       const name = get(map.name, r).replace(/\s*·\s*(Visited link|Visited).*$/i, '').trim();
@@ -285,15 +293,11 @@ export default function Page() {
       // a real site only if it has a domain; if the "website" cell is itself a maps link, treat it as the maps source
       const realSite = domainOf(websiteRaw) ? websiteRaw.trim() : '';
       const mapsUrl = (mapsRaw.trim() || (isMapsLink(websiteRaw) ? websiteRaw.trim() : ''));
-      const dom = domainOf(realSite);
       const phoneClean = isBlankPhone(phoneRaw) ? '' : phoneRaw.trim();
-      const ph = normPhone(phoneClean);
       if (doDedup) {
-        const dPhone = ph && seenPhone.has(ph);
-        const dDom = dom && seenDomain.has(dom);
-        if (dPhone || dDom) { dupCount++; continue; }
-        if (ph) seenPhone.add(ph);
-        if (dom) seenDomain.add(dom);
+        const key = dedupKey(mapsUrl, phoneClean, realSite);
+        if (key && seen.has(key)) { dupCount++; continue; }
+        if (key) seen.add(key);
       }
       out.push({
         name,
@@ -421,17 +425,15 @@ export default function Page() {
     setVEnd(Date.now());
 
     if (!dedupe) return;
-    const seenDom = new Set(), seenPhone = new Set();
+    const seen = new Set();
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i];
-      const dom = domainOf(row.website);
-      const ph = normPhone(row.phone);
-      if ((dom && seenDom.has(dom)) || (ph && seenPhone.has(ph))) {
+      const key = dedupKey(row.maps, row.phone, row.website);
+      if (key && seen.has(key)) {
         row.skip = true;
         setResults((prev) => { const c = prev.slice(); c[i] = { ...c[i], status: 'duplicate' }; return c; });
-      } else {
-        if (dom) seenDom.add(dom);
-        if (ph) seenPhone.add(ph);
+      } else if (key) {
+        seen.add(key);
       }
     }
   }
@@ -583,7 +585,7 @@ export default function Page() {
   const exportCols = () => {
     const ck = checks.map((c) => c.key).filter(Boolean);
     return ['lead', 'call_status', 'name', 'phone', 'email', 'city', 'website', 'business_status',
-      ...ck, 'team_size', 'locations', 'business_type', 'confidence', 'ai_notes', 'my_notes',
+      ...ck, 'franchise', 'team_size', 'locations', 'business_type', 'confidence', 'ai_notes', 'my_notes',
       'instagram', 'facebook', 'other_emails', 'status', 'maps_link'];
   };
   function rowValues(r) {
@@ -592,7 +594,7 @@ export default function Page() {
     const s = r.socials || {};
     const ck = checks.map((x) => x.key).filter(Boolean).map((k) => v[k] || '');
     return [leadOf(checks, r), c.status || 'new', r.name, fmtPhone(r.phone), r.email || '', r.city, r.finalUrl || r.website, r.businessStatus || '',
-      ...ck, v.team_size || '', v.locations || '', v.business_type || '', v.confidence || '', v.notes || '', c.notes || '',
+      ...ck, v.franchise || '', v.team_size || '', v.locations || '', v.business_type || '', v.confidence || '', v.notes || '', c.notes || '',
       s.instagram || '', s.facebook || '', (r.emails || []).slice(1).join(' '), r.status, r.maps];
   }
   function exportCSV() {
@@ -627,6 +629,7 @@ export default function Page() {
   const skipCount = results ? results.filter((r) => leadOf(checks, r) === 'no').length : 0;
   const emailCount = results ? results.filter((r) => r.email).length : 0;
   const phoneCount = results ? results.filter((r) => r.phone).length : 0;
+  const franchiseCount = results ? results.filter((r) => r.verdict && r.verdict.franchise === 'yes').length : 0;
   const cachedCount = results ? results.filter((r) => r.cached).length : 0;
   const vElapsedMs = vStart ? (vEnd || Date.now()) - vStart : 0;
   const vRatePerMin = vElapsedMs > 1000 && (vDoneN - vCachedN) > 0 ? (vDoneN - vCachedN) / (vElapsedMs / 60000) : 0;
@@ -737,7 +740,7 @@ export default function Page() {
           </div>
           <label className="row small muted mt2" style={{ gap: 7 }}>
             <input type="checkbox" checked={dedupe} onChange={(e) => setDedupe(e.target.checked)} />
-            Skip duplicate phone numbers and duplicate website domains
+            Skip duplicates — same Google Maps listing (falls back to phone, then domain). Chains/franchises that share a website are KEPT, not collapsed.
           </label>
           <label className="row small muted" style={{ gap: 7, marginTop: 6 }}>
             <input type="checkbox" checked={resolveMaps} onChange={(e) => setResolveMaps(e.target.checked)} />
@@ -833,6 +836,7 @@ export default function Page() {
               <Stat n={skipCount} label="skip" cls="s-no" />
               <Stat n={emailCount} label="✉ emails" cls="s-info" />
               <Stat n={phoneCount} label="☎ phones" cls="s-info" />
+              <Stat n={franchiseCount} label="⛓ chains" cls="s-chain" />
             </div>
             <div className="row mt small muted" style={{ gap: 14 }}>
               {Object.entries(counts).map(([k, v]) => <span key={k}><StatusTag status={k} /> {v}</span>)}
@@ -937,7 +941,7 @@ function ResultsTable({ results, checks, crm, onCrm }) {
           <tr>
             <th>Lead</th><th>Call</th><th>Name</th><th>Phone</th><th>Email</th><th>City</th><th>Site</th><th>Open?</th>
             {cks.map((c) => <th key={c.key}>{c.key}</th>)}
-            <th>size</th><th>type</th><th>Status</th><th>AI note</th><th>My notes</th>
+            <th>chain?</th><th>size</th><th>type</th><th>Status</th><th>AI note</th><th>My notes</th>
           </tr>
         </thead>
         <tbody>
@@ -964,6 +968,7 @@ function ResultsTable({ results, checks, crm, onCrm }) {
                 <td className="muted">{dom ? <a href={r.finalUrl || r.website} target="_blank" rel="noreferrer">{dom}</a> : (r.maps ? <a href={r.maps} target="_blank" rel="noreferrer" title={r.maps}>maps↗</a> : '')}</td>
                 <td><OpenCell s={r.businessStatus} /></td>
                 {cks.map((c) => <td key={c.key}><Verdict v={v[c.key]} want={c.want} /></td>)}
+                <td>{v.franchise === 'yes' ? <span className="tag chain">chain</span> : <span className="muted">—</span>}</td>
                 <td><SizeCell v={v} /></td>
                 <td className="muted">{v.business_type || ''}</td>
                 <td><StatusTag status={r.status} /></td>

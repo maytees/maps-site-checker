@@ -71,14 +71,15 @@ The defaults match the Petzio target — a staffed boarding/daycare facility tha
 
 Change or add your own; instruction + checks are remembered between runs. (If you previously ran the app, hit **↺ defaults** to load these.)
 
-- **Skip duplicates** (on): drops repeated phone numbers or website domains.
+- **Skip duplicates** (on): de-dups by the **Google Maps listing** (each listing = one business), falling back to phone then domain only if there's no link. Chains and businesses that share a website (PetSmart locations, anyone using a facebook.com page) are **kept**, not collapsed — domain is a bad key for those.
 - **Verify website before de-duplicating** (off): if your CSV has many rows sharing the *same wrong* URL, turn this on. It first opens each **Google Maps listing**, replaces the CSV website with the real one (and grabs phone/closed), and *only then* removes duplicates — so genuinely different businesses aren't dropped over a bad shared URL. Needs a Maps link column; slower (one headless-browser open per row, but cached). Duplicates are marked `duplicate` and skipped, not scanned.
 - **Resolve from Maps link** (on): see below.
 
 **4. Run & export** — press **Scan**. Each row runs live (progress bar + per-row status). The **Lead** column says **✓ call / maybe / skip** based on your Wants (a temporarily/permanently closed business is never a "call").
 
 - **Re-run maybes** — if the model was unsure on some rows, a **↻ Re-run N maybes with [model]** button appears. Pick a bigger/more-accurate model (e.g. `qwen2.5:7b` or `qwen2.5:14b`) and it re-scans **only** the `maybe` rows — fast triage without paying the big model on the whole list.
-- **⬇ Export CSV** / **⧉ Copy for Sheets** — columns: lead, call_status, name, phone, email, city, website, business_status, your checks, team_size, locations, business_type, confidence, ai_notes, my_notes, instagram, facebook, other_emails, status, maps_link.
+- **⬇ Export CSV** / **⧉ Copy for Sheets** — columns: lead, call_status, name, phone, email, city, website, business_status, your checks, **franchise**, team_size, locations, business_type, confidence, ai_notes, my_notes, instagram, facebook, other_emails, status, maps_link.
+- **franchise** — flags national chains / franchises (PetSmart, Petco, VCA, Banfield, Camp Bow Wow, Dogtopia, …). Detected by a built-in chain list (matches even if the site is unreachable) **and** the AI for ones not on the list. Chains aren't skipped — just labelled, so you can filter them out (or in). Shown as a **chain** tag + the **⛓ chains** stat.
 
 In Sheets, filter `lead = yes` for your call list (or `maybe` to review the unsure ones).
 

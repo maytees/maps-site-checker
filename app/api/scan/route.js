@@ -1,5 +1,5 @@
 import { normalizeUrl, gatherSiteText } from '@/lib/site';
-import { classify, pickPages } from '@/lib/ollama';
+import { classify, pickPages, isChain } from '@/lib/ollama';
 import { log, warn, short } from '@/lib/log';
 import { cacheGet, cachePut, sigOf } from '@/lib/cache';
 
@@ -18,9 +18,11 @@ export async function POST(req) {
 
   const name = businessName || '(no name)';
   const t0 = Date.now();
+  // chain flag works off name/domain alone — set it even when the site is unreachable
+  const chainV = isChain(name, website) ? { verdict: { franchise: 'yes' } } : {};
   const norm = normalizeUrl(website);
-  if (!norm) { warn('scan', `✗ ${name}: no usable website`); return json({ ok: true, status: 'no-website', error: 'no usable website in this row' }); }
-  if (norm.mapsOnly) { warn('scan', `✗ ${name}: maps link only`); return json({ ok: true, status: 'maps-only', error: 'only a Google Maps link — re-scrape with the website (site) field picked' }); }
+  if (!norm) { warn('scan', `✗ ${name}: no usable website`); return json({ ok: true, status: 'no-website', error: 'no usable website in this row', ...chainV }); }
+  if (norm.mapsOnly) { warn('scan', `✗ ${name}: maps link only`); return json({ ok: true, status: 'maps-only', error: 'only a Google Maps link — re-scrape with the website (site) field picked', ...chainV }); }
 
   // cache: keyed by domain + a hash of checks/model/instruction/page-selection mode
   const sig = sigOf(checks.map((c) => [c.key, c.question, c.want || '']), model, instruction || '', aiPick ? 'ai' : 'rx');
@@ -33,15 +35,18 @@ export async function POST(req) {
   // AI picks which pages to read (regex shortlist + regex fallback inside gatherSiteText)
   const pick = aiPick ? (candidates) => pickPages({ model, businessName: name, checks, candidates }) : undefined;
   const site = await gatherSiteText(norm.url, { pick });
-  if (!site.ok) { warn('scan', `✗ ${name}: fetch-failed (${site.error})`); return json({ ok: true, status: 'fetch-failed', finalUrl: norm.url, error: site.error }); }
+  if (!site.ok) { warn('scan', `✗ ${name}: fetch-failed (${site.error})`); return json({ ok: true, status: 'fetch-failed', finalUrl: norm.url, error: site.error, ...chainV }); }
   log('site', `  ${name}: read ${site.pages} page(s) [${(site.pageUrls || []).map((u) => short(u, 40)).join(', ')}]${site.signals && Object.keys(site.signals).length ? '  signals ' + JSON.stringify(site.signals) : ''}`);
   if (!site.text || site.text.replace(/# PAGE:.*$/gm, '').trim().length < 40) {
     warn('scan', `✗ ${name}: empty-site (JS-only?)`);
-    return json({ ok: true, status: 'empty-site', finalUrl: site.finalUrl, error: 'site had no readable text (likely JS-only)' });
+    return json({ ok: true, status: 'empty-site', finalUrl: site.finalUrl, error: 'site had no readable text (likely JS-only)', ...chainV });
   }
 
   const result = await classify({ model, checks, instruction, businessName, text: site.text, signals: site.signals, pageUrls: site.pageUrls });
   if (!result.ok) { warn('scan', `✗ ${name}: ai-error (${result.error})`); return json({ ok: false, status: 'ai-error', finalUrl: site.finalUrl, error: result.error }, 200); }
+
+  // hard-flag obvious chains by name/domain, regardless of what the model said
+  if (result.verdict && isChain(name, site.finalUrl)) result.verdict.franchise = 'yes';
 
   const secs = ((Date.now() - t0) / 1000).toFixed(1);
   log('scan', `✓ ${name} done in ${secs}s →`, result.verdict, site.email ? `· email ${site.email}` : '');
