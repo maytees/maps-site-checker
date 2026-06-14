@@ -1,0 +1,551 @@
+'use client';
+
+import { useEffect, useRef, useState } from 'react';
+import Papa from 'papaparse';
+
+const LS = 'maps-site-checker.config.v1';
+
+// want: the answer that makes a GOOD lead ('yes' | 'no' | '' = informational only)
+const DEFAULT_CHECKS = [
+  { key: 'boarding_or_daycare', want: 'yes', question: 'Does this business run an overnight BOARDING facility or a dog DAYCARE where pets stay on-site? Say yes even if it is a vet that also boards.' },
+  { key: 'is_solo_operator', want: 'no', question: 'Is this a single individual / in-home pet-sitter or dog-walker, rather than a facility with multiple staff and a front desk?' },
+  { key: 'has_webcams', want: 'no', question: 'Does it ALREADY offer live webcams/cameras for owners to watch their pet (puppy cam, live stream)? Security cameras or social photos do not count.' },
+  { key: 'has_owner_update_app', want: 'no', question: 'Does it already use a pet-parent app or owner portal that sends photo/video/"report card" updates (e.g. Gingr, PetExec, Revelation Pets, "download our app", "live report cards")?' },
+  { key: 'is_vet', want: '', question: 'Is this primarily a veterinary clinic / animal hospital?' },
+];
+const DEFAULT_INSTRUCTION =
+  'I sell Petzio — software for pet BOARDING facilities, dog hotels, and daycares. It replaces the constant "how is my dog?" calls and texts from owners: owners request a photo/video/note update through a portal and staff fulfill it. ' +
+  'My ideal customer is a STAFFED boarding or daycare facility whose team fields lots of owner update requests. ' +
+  'Bad leads: solo dog-walkers / in-home pet sitters (no front desk), vet-only clinics that do not board, and facilities that already let owners watch pets via live webcams or already run a pet-parent update app / report-card portal (they have solved this problem).';
+
+// ---------- small helpers ----------
+const digits = (s) => String(s || '').replace(/\D/g, '');
+function normPhone(s) {
+  const d = digits(s);
+  if (d.length >= 10) return d.slice(-10);
+  return d || '';
+}
+function domainOf(s) {
+  if (!s) return '';
+  let v = String(s).trim().toLowerCase();
+  if (/google\.[a-z.]+\/maps|goo\.gl\/maps/.test(v)) return ''; // maps link is not a website
+  v = v.replace(/^https?:\/\//, '').replace(/^www\./, '');
+  v = v.split(/[/?#]/)[0];
+  return /\.[a-z]{2,}$/.test(v) ? v : '';
+}
+function cityFromAddress(v) {
+  if (!v) return '';
+  const s = String(v).trim();
+  const parts = s.split(',').map((x) => x.trim()).filter(Boolean);
+  if (parts.length < 2) return s.length <= 30 ? s : '';
+  // find "STATE ZIP" segment, city is the one before it
+  const si = parts.findIndex((p) => /^[A-Za-z]{2}\s+\d{4,5}/.test(p) || /^[A-Z]{2}$/.test(p));
+  if (si > 0) return parts[si - 1];
+  return parts[parts.length - 2] || '';
+}
+function isMapsLink(v) { return /google\.[a-z.]+\/maps|goo\.gl\/maps|maps\.app\.goo\.gl/i.test(String(v || '')); }
+
+// Is this row a good lead? Uses each check's `want`; closed businesses are never a lead.
+function leadOf(checks, r) {
+  if (!r.verdict) return '';
+  if (r.businessStatus && r.businessStatus !== 'open') return 'no';
+  const wants = checks.filter((c) => c.key && (c.want === 'yes' || c.want === 'no'));
+  if (!wants.length) return '';
+  let anyUnclear = false;
+  for (const c of wants) {
+    const a = r.verdict[c.key];
+    if (a === c.want) continue;
+    if (a === 'unclear' || a == null) { anyUnclear = true; continue; }
+    return 'no'; // clearly the wrong answer
+  }
+  return anyUnclear ? 'maybe' : 'yes';
+}
+const oppose = (w) => (w === 'yes' ? 'no' : 'yes');
+function looksDomain(v) { return !!domainOf(v); }
+function looksPhone(v) { const d = digits(v); return d.length >= 10 && d.length <= 13; }
+function looksAddress(v) { return /\d{1,6}\s+\S+/.test(v) && /,/.test(v); }
+
+function guessIndex(headers, cols, kind) {
+  const h = headers.map((x) => String(x).toLowerCase());
+  const hHit = (re) => h.findIndex((x) => re.test(x));
+  const sample = (i) => cols[i].filter(Boolean).slice(0, 20);
+  const frac = (i, fn) => { const s = sample(i); return s.length ? s.filter(fn).length / s.length : 0; };
+  if (kind === 'phone') {
+    let i = hHit(/phone|tel|number/); if (i >= 0) return i;
+    let best = -1, bf = 0.5; cols.forEach((_, i2) => { const f = frac(i2, looksPhone); if (f > bf) { bf = f; best = i2; } }); return best;
+  }
+  if (kind === 'website') {
+    let i = hHit(/site|web|url|domain/); if (i >= 0) return i;
+    let best = -1, bf = 0.5; cols.forEach((_, i2) => { const f = frac(i2, looksDomain); if (f > bf) { bf = f; best = i2; } }); return best;
+  }
+  if (kind === 'name') {
+    let i = hHit(/name|title|label|business/); if (i >= 0) return i;
+    return 0;
+  }
+  if (kind === 'cityaddr') {
+    let i = hHit(/address|city|location|addr/); if (i >= 0) return i;
+    let best = -1, bf = 0.4; cols.forEach((_, i2) => { const f = frac(i2, looksAddress); if (f > bf) { bf = f; best = i2; } }); return best;
+  }
+  if (kind === 'maps') { return hHit(/maps|link|google/); }
+  return -1;
+}
+
+// ---------- component ----------
+export default function Page() {
+  const [headers, setHeaders] = useState(null); // unique display headers
+  const [cols, setCols] = useState([]);         // column-major: cols[i] = array of values
+  const [rowCount, setRowCount] = useState(0);
+  const [fileName, setFileName] = useState('');
+  const [over, setOver] = useState(false);
+
+  const [map, setMap] = useState({ name: -1, phone: -1, website: -1, cityaddr: -1, maps: -1 });
+
+  const [models, setModels] = useState([]);
+  const [model, setModel] = useState('');
+  const [ollama, setOllama] = useState({ state: 'checking', error: '' });
+
+  const [instruction, setInstruction] = useState(DEFAULT_INSTRUCTION);
+  const [checks, setChecks] = useState(DEFAULT_CHECKS);
+  const [dedupe, setDedupe] = useState(true);
+  const [resolveMaps, setResolveMaps] = useState(true);
+  const [concurrency, setConcurrency] = useState(4);
+
+  const [results, setResults] = useState(null); // [{name,phone,city,website,maps,status,verdict,error}]
+  const [running, setRunning] = useState(false);
+  const [done, setDone] = useState(0);
+  const stopRef = useRef(false);
+
+  // load saved config
+  useEffect(() => {
+    try {
+      const c = JSON.parse(localStorage.getItem(LS) || '{}');
+      if (c.instruction) setInstruction(c.instruction);
+      if (Array.isArray(c.checks) && c.checks.length) setChecks(c.checks);
+      if (typeof c.dedupe === 'boolean') setDedupe(c.dedupe);
+      if (typeof c.resolveMaps === 'boolean') setResolveMaps(c.resolveMaps);
+      if (c.concurrency) setConcurrency(c.concurrency);
+      if (c.model) setModel(c.model);
+    } catch {}
+    refreshModels();
+  }, []);
+
+  // persist config
+  useEffect(() => {
+    const t = setTimeout(() => {
+      localStorage.setItem(LS, JSON.stringify({ instruction, checks, dedupe, resolveMaps, concurrency, model }));
+    }, 300);
+    return () => clearTimeout(t);
+  }, [instruction, checks, dedupe, resolveMaps, concurrency, model]);
+
+  async function refreshModels() {
+    setOllama({ state: 'checking', error: '' });
+    try {
+      const r = await fetch('/api/models').then((x) => x.json());
+      if (!r.ok) { setOllama({ state: 'down', error: r.error || 'no response' }); return; }
+      setModels(r.models);
+      setOllama({ state: 'up', error: '' });
+      setModel((m) => m && r.models.includes(m) ? m : (r.models.find((x) => /qwen2\.5/.test(x)) || r.models[0] || ''));
+    } catch (e) {
+      setOllama({ state: 'down', error: String(e) });
+    }
+  }
+
+  function onFile(file) {
+    if (!file) return;
+    setFileName(file.name);
+    Papa.parse(file, {
+      header: false,
+      skipEmptyLines: 'greedy',
+      complete: (res) => {
+        const data = res.data.filter((r) => r.some((c) => String(c).trim() !== ''));
+        if (!data.length) return;
+        let raw = data[0].map((x) => String(x).replace(/^﻿/, '').trim());
+        const seen = {};
+        const uniq = raw.map((x) => {
+          const base = x || 'col';
+          seen[base] = (seen[base] || 0) + 1;
+          return seen[base] > 1 ? `${base} #${seen[base]}` : base;
+        });
+        const body = data.slice(1);
+        const colArr = uniq.map((_, i) => body.map((r) => (r[i] ?? '').toString()));
+        setHeaders(uniq);
+        setCols(colArr);
+        setRowCount(body.length);
+        setResults(null);
+        setMap({
+          name: guessIndex(raw, colArr, 'name'),
+          phone: guessIndex(raw, colArr, 'phone'),
+          website: guessIndex(raw, colArr, 'website'),
+          cityaddr: guessIndex(raw, colArr, 'cityaddr'),
+          maps: guessIndex(raw, colArr, 'maps'),
+        });
+      },
+    });
+  }
+
+  function buildRows() {
+    const get = (i, r) => (i >= 0 && cols[i] ? cols[i][r] || '' : '');
+    const out = [];
+    const seenPhone = new Set();
+    const seenDomain = new Set();
+    let dupCount = 0;
+    for (let r = 0; r < rowCount; r++) {
+      const name = get(map.name, r).replace(/\s*·\s*(Visited link|Visited).*$/i, '').trim();
+      const phoneRaw = get(map.phone, r);
+      const websiteRaw = get(map.website, r);
+      const cityaddr = get(map.cityaddr, r);
+      const mapsRaw = get(map.maps, r);
+      // a real site only if it has a domain; if the "website" cell is itself a maps link, treat it as the maps source
+      const realSite = domainOf(websiteRaw) ? websiteRaw.trim() : '';
+      const mapsUrl = (mapsRaw.trim() || (isMapsLink(websiteRaw) ? websiteRaw.trim() : ''));
+      const dom = domainOf(realSite);
+      const ph = normPhone(phoneRaw);
+      if (dedupe) {
+        const dPhone = ph && seenPhone.has(ph);
+        const dDom = dom && seenDomain.has(dom);
+        if (dPhone || dDom) { dupCount++; continue; }
+        if (ph) seenPhone.add(ph);
+        if (dom) seenDomain.add(dom);
+      }
+      out.push({
+        name,
+        phone: phoneRaw.trim(),
+        city: cityFromAddress(cityaddr),
+        website: realSite,
+        maps: mapsUrl,
+        businessStatus: '',
+        status: 'pending',
+        verdict: null,
+        error: '',
+      });
+    }
+    return { rows: out, dupCount };
+  }
+
+  async function run() {
+    if (map.website < 0 && map.maps < 0) { alert('Map a Website column, or a Google Maps link column to resolve from (step 2).'); return; }
+    if (!model) { alert('Pick a model (step 3). Is Ollama running?'); return; }
+    const cleanChecks = checks
+      .map((c) => ({ key: (c.key || '').trim().replace(/[^a-z0-9_]+/gi, '_').toLowerCase(), question: (c.question || '').trim() }))
+      .filter((c) => c.key && c.question);
+    if (!cleanChecks.length) { alert('Add at least one check (step 3).'); return; }
+
+    const { rows, dupCount } = buildRows();
+    setResults(rows.map((r) => ({ ...r })));
+    setDone(0);
+    setRunning(true);
+    stopRef.current = false;
+
+    let next = 0;
+    let finished = 0;
+    const total = rows.length;
+    const worker = async () => {
+      while (!stopRef.current) {
+        const i = next++;
+        if (i >= total) break;
+        const row = rows[i];
+        let website = row.website;
+        let phone = row.phone;
+
+        // Step A — open the Maps listing to get website (if missing), phone (if missing), and open/closed.
+        const needResolve = resolveMaps && row.maps && (!website || !phone);
+        if (needResolve) {
+          setResults((prev) => { const c = prev.slice(); c[i] = { ...c[i], status: 'resolving' }; return c; });
+          let rr;
+          try {
+            rr = await fetch('/api/resolve', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ mapsUrl: row.maps }),
+            }).then((x) => x.json());
+          } catch (e) { rr = { status: 'failed', error: String(e) }; }
+          if (rr.phone && !phone) phone = rr.phone;
+          if (rr.status === 'ok' && rr.website) website = rr.website;
+          setResults((prev) => { const c = prev.slice(); c[i] = { ...c[i], phone, website: website || c[i].website, businessStatus: rr.businessStatus || c[i].businessStatus }; return c; });
+          if (!website) {
+            const st = rr.status === 'blocked' ? 'maps-blocked' : rr.status === 'none' ? 'no-website' : 'resolve-failed';
+            setResults((prev) => { const c = prev.slice(); c[i] = { ...c[i], status: st, error: rr.error || '' }; return c; });
+            finished++; setDone(finished); continue;
+          }
+        }
+        if (!website) {
+          setResults((prev) => { const c = prev.slice(); c[i] = { ...c[i], status: row.maps ? 'maps-only' : 'no-website' }; return c; });
+          finished++; setDone(finished); continue;
+        }
+
+        // Step B — scan the website.
+        setResults((prev) => { const c = prev.slice(); c[i] = { ...c[i], status: 'running' }; return c; });
+        let res;
+        try {
+          res = await fetch('/api/scan', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ website, businessName: row.name, model, instruction, checks: cleanChecks }),
+          }).then((x) => x.json());
+        } catch (e) {
+          res = { ok: false, status: 'error', error: String(e) };
+        }
+        setResults((prev) => {
+          const c = prev.slice();
+          c[i] = { ...c[i], phone, status: res.status || (res.ok ? 'done' : 'error'), verdict: res.verdict || null, error: res.error || '', finalUrl: res.finalUrl || website };
+          return c;
+        });
+        finished++;
+        setDone(finished);
+      }
+    };
+    const n = Math.max(1, Math.min(10, concurrency));
+    await Promise.all(Array.from({ length: n }, worker));
+    setRunning(false);
+    if (dupCount) console.log(`Skipped ${dupCount} duplicate rows.`);
+  }
+
+  function stop() { stopRef.current = true; }
+
+  // ---------- export ----------
+  const exportCols = () => {
+    const ck = checks.map((c) => c.key).filter(Boolean);
+    return ['lead', 'name', 'phone', 'city', 'website', 'business_status', ...ck, 'business_type', 'confidence', 'ai_notes', 'status', 'maps_link'];
+  };
+  function rowValues(r) {
+    const v = r.verdict || {};
+    const ck = checks.map((c) => c.key).filter(Boolean).map((k) => v[k] || '');
+    return [leadOf(checks, r), r.name, r.phone, r.city, r.finalUrl || r.website, r.businessStatus || '', ...ck, v.business_type || '', v.confidence || '', v.notes || '', r.status, r.maps];
+  }
+  function exportCSV() {
+    if (!results) return;
+    const q = (x) => '"' + String(x == null ? '' : x).replace(/"/g, '""') + '"';
+    const lines = [exportCols().map(q).join(',')];
+    for (const r of results) lines.push(rowValues(r).map(q).join(','));
+    const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = (fileName.replace(/\.csv$/i, '') || 'scan') + '_checked.csv';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  }
+  function copyTSV() {
+    if (!results) return;
+    const clean = (x) => String(x == null ? '' : x).replace(/[\t\r\n]+/g, ' ');
+    const lines = [exportCols().join('\t')];
+    for (const r of results) lines.push(rowValues(r).map(clean).join('\t'));
+    navigator.clipboard.writeText(lines.join('\n')).then(
+      () => flash('Copied — paste into Google Sheets'),
+      () => flash('Copy failed — use Export CSV')
+    );
+  }
+  const [msg, setMsg] = useState('');
+  function flash(m) { setMsg(m); setTimeout(() => setMsg(''), 2500); }
+
+  // ---------- derived ----------
+  const counts = results ? results.reduce((a, r) => { a[r.status] = (a[r.status] || 0) + 1; return a; }, {}) : {};
+  const total = results ? results.length : 0;
+
+  // ---------- render ----------
+  return (
+    <div className="wrap">
+      <div className="top">
+        <span className="brand-dot" />
+        <h1>Maps Site Checker</h1>
+        <span className="sub">CSV → map columns → scan each website with local AI → call list</span>
+      </div>
+
+      {/* STEP 1 — import */}
+      <section className="step">
+        <div className="step-head"><span className="step-num">1</span><h2>Import CSV</h2></div>
+        <label
+          className={'drop' + (over ? ' over' : '')}
+          onDragOver={(e) => { e.preventDefault(); setOver(true); }}
+          onDragLeave={() => setOver(false)}
+          onDrop={(e) => { e.preventDefault(); setOver(false); onFile(e.dataTransfer.files[0]); }}
+        >
+          <input type="file" accept=".csv,text/csv" style={{ display: 'none' }} onChange={(e) => onFile(e.target.files[0])} />
+          {headers
+            ? <div><b>{fileName}</b> — {rowCount} rows, {headers.length} columns. <span className="muted">Click to load a different file.</span></div>
+            : <div>Drop a CSV here, or click to choose. <div className="tiny mt">Any CSV — you map the columns in the next step.</div></div>}
+        </label>
+      </section>
+
+      {/* STEP 2 — map columns */}
+      <section className={'step' + (headers ? '' : ' disabled')}>
+        <div className="step-head"><span className="step-num">2</span><h2>Map your columns</h2></div>
+        <div className="grid-map">
+          <ColSelect label="Name" headers={headers} value={map.name} onChange={(v) => setMap({ ...map, name: v })} cols={cols} />
+          <ColSelect label="Phone" headers={headers} value={map.phone} onChange={(v) => setMap({ ...map, phone: v })} cols={cols} />
+          <ColSelect label="Website / site  (required)" headers={headers} value={map.website} onChange={(v) => setMap({ ...map, website: v })} cols={cols} />
+          <ColSelect label="City or Address" headers={headers} value={map.cityaddr} onChange={(v) => setMap({ ...map, cityaddr: v })} cols={cols} hint="city is auto-parsed from an address" />
+          <ColSelect label="Google Maps link (optional)" headers={headers} value={map.maps} onChange={(v) => setMap({ ...map, maps: v })} cols={cols} />
+        </div>
+        {headers && map.website < 0 && map.maps >= 0 &&
+          <div className="pill mt2">No website column — that's fine: it'll open each <b>Google Maps link</b> in a headless browser and read the site automatically (slower). Toggle in step 3.</div>}
+        {headers && map.website < 0 && map.maps < 0 &&
+          <div className="pill err mt2">Map a <b>Website</b> column, or a <b>Google Maps link</b> column so it can resolve the site for you.</div>}
+      </section>
+
+      {/* STEP 3 — configure */}
+      <section className={'step' + (headers ? '' : ' disabled')}>
+        <div className="step-head"><span className="step-num">3</span><h2>What to check</h2></div>
+
+        <div className="row spread">
+          <div className="row" style={{ gap: 8 }}>
+            <span className="muted small">Local model:</span>
+            <select style={{ width: 220 }} value={model} onChange={(e) => setModel(e.target.value)}>
+              {models.length === 0 && <option value="">(no models found)</option>}
+              {models.map((m) => <option key={m} value={m}>{m}</option>)}
+            </select>
+            <button className="sm ghost" onClick={refreshModels}>↻</button>
+            {ollama.state === 'up' && <span className="pill ok"><span className="dot green" />Ollama</span>}
+            {ollama.state === 'down' && <span className="pill err" title={ollama.error}><span className="dot red" />Ollama offline</span>}
+            {ollama.state === 'checking' && <span className="pill"><span className="dot grey" />checking…</span>}
+          </div>
+          <label className="row small muted" style={{ gap: 6 }} title="How many businesses to process at once. Higher = faster but heavier.">
+            parallel
+            <input type="number" min={1} max={10} value={concurrency} style={{ width: 56 }} onChange={(e) => setConcurrency(+e.target.value || 1)} />
+          </label>
+        </div>
+
+        <div className="mt2">
+          <label className="fld">AI instruction (context for every site)
+            <textarea value={instruction} onChange={(e) => setInstruction(e.target.value)} />
+          </label>
+        </div>
+
+        <div className="mt2">
+          <div className="row spread">
+            <h2 style={{ fontSize: 12 }}>Checks — each is a yes/no/unclear column. “Want” = the answer that makes a good lead (drives the Lead column &amp; colors).</h2>
+            <div className="row" style={{ gap: 6 }}>
+              <button className="sm" onClick={() => { setChecks(DEFAULT_CHECKS.map((c) => ({ ...c }))); setInstruction(DEFAULT_INSTRUCTION); }}>↺ defaults</button>
+              <button className="sm" onClick={() => setChecks([...checks, { key: '', question: '', want: '' }])}>+ add check</button>
+            </div>
+          </div>
+          <div className="checks mt">
+            {checks.map((c, i) => (
+              <div className="check" key={i}>
+                <input type="text" placeholder="column_key" value={c.key}
+                  onChange={(e) => { const n = checks.slice(); n[i] = { ...n[i], key: e.target.value }; setChecks(n); }} />
+                <input type="text" placeholder="Yes/no question for the AI" value={c.question}
+                  onChange={(e) => { const n = checks.slice(); n[i] = { ...n[i], question: e.target.value }; setChecks(n); }} />
+                <select value={c.want || ''} title="Answer that makes a good lead"
+                  onChange={(e) => { const n = checks.slice(); n[i] = { ...n[i], want: e.target.value }; setChecks(n); }}>
+                  <option value="">info only</option>
+                  <option value="yes">want yes</option>
+                  <option value="no">want no</option>
+                </select>
+                <button className="sm danger" onClick={() => setChecks(checks.filter((_, j) => j !== i))}>✕</button>
+              </div>
+            ))}
+          </div>
+          <label className="row small muted mt2" style={{ gap: 7 }}>
+            <input type="checkbox" checked={dedupe} onChange={(e) => setDedupe(e.target.checked)} />
+            Skip duplicate phone numbers and duplicate website domains
+          </label>
+          <label className="row small muted" style={{ gap: 7, marginTop: 6 }}>
+            <input type="checkbox" checked={resolveMaps} onChange={(e) => setResolveMaps(e.target.checked)} />
+            Resolve the website from the Google Maps link when a row has no site (headless browser — slower, needed for Maps-link-only CSVs)
+          </label>
+        </div>
+      </section>
+
+      {/* STEP 4 — run */}
+      <section className={'step' + (headers ? '' : ' disabled')}>
+        <div className="step-head"><span className="step-num">4</span><h2>Run &amp; export</h2></div>
+        <div className="row">
+          {!running
+            ? <button className="primary" onClick={run} disabled={!headers || (map.website < 0 && map.maps < 0) || !model}>▶ Scan {rowCount ? `${rowCount} rows` : ''}</button>
+            : <button className="danger" onClick={stop}><span className="spin" /> Stop</button>}
+          <button onClick={exportCSV} disabled={!results}>⬇ Export CSV</button>
+          <button onClick={copyTSV} disabled={!results}>⧉ Copy for Sheets</button>
+          {msg && <span className="pill ok">{msg}</span>}
+        </div>
+
+        {results &&
+          <>
+            <div className="bar"><i style={{ width: total ? `${(done / total) * 100}%` : 0 }} /></div>
+            <div className="row mt small muted" style={{ gap: 14 }}>
+              <span>{done}/{total} done</span>
+              {Object.entries(counts).map(([k, v]) => <span key={k}><StatusTag status={k} /> {v}</span>)}
+            </div>
+            <ResultsTable results={results} checks={checks} />
+          </>}
+      </section>
+    </div>
+  );
+}
+
+function ColSelect({ label, headers, value, onChange, cols, hint }) {
+  const sample = headers && value >= 0 && cols[value] ? cols[value].find((x) => String(x).trim()) : '';
+  return (
+    <label className="fld">
+      {label}
+      <select value={value} onChange={(e) => onChange(parseInt(e.target.value, 10))} disabled={!headers}>
+        <option value={-1}>— none —</option>
+        {headers && headers.map((h, i) => <option key={i} value={i}>{h}</option>)}
+      </select>
+      {sample ? <span className="tiny muted" title={sample}>e.g. {String(sample).slice(0, 38)}</span> : hint ? <span className="tiny muted">{hint}</span> : <span className="tiny">&nbsp;</span>}
+    </label>
+  );
+}
+
+function StatusTag({ status }) {
+  const labelMap = {
+    pending: 'pending', resolving: 'finding site…', running: 'scanning…', done: 'done',
+    'no-website': 'no website', 'maps-only': 'maps link only',
+    'resolve-failed': "couldn't open maps", 'maps-blocked': 'google blocked',
+    'fetch-failed': 'site unreachable', 'empty-site': 'no text', 'ai-error': 'AI error', error: 'error',
+  };
+  return <span className={`tag status-${status}`}>{labelMap[status] || status}</span>;
+}
+
+function Verdict({ v, want }) {
+  if (!v) return <span className="muted">—</span>;
+  let cls = 'unclear';
+  if (want === 'yes' || want === 'no') cls = v === want ? 'yes' : v === oppose(want) ? 'no' : 'unclear';
+  return <span className={`tag ${cls}`}>{v}</span>;
+}
+
+function LeadTag({ lead }) {
+  if (!lead) return <span className="muted">—</span>;
+  const cls = lead === 'yes' ? 'yes' : lead === 'no' ? 'no' : 'maybe';
+  const label = lead === 'yes' ? '✓ call' : lead === 'no' ? 'skip' : 'maybe';
+  return <span className={`tag ${cls}`}>{label}</span>;
+}
+
+function OpenCell({ s }) {
+  if (!s || s === 'open') return <span className="muted">{s ? 'open' : ''}</span>;
+  return <span className="tag no">{s === 'permanently_closed' ? 'closed' : 'temp closed'}</span>;
+}
+
+function ResultsTable({ results, checks }) {
+  const cks = checks.filter((c) => c.key);
+  return (
+    <div className="tbl-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Lead</th><th>Name</th><th>Phone</th><th>City</th><th>Site</th><th>Open?</th>
+            {cks.map((c) => <th key={c.key}>{c.key}</th>)}
+            <th>type</th><th>Status</th><th>Notes</th>
+          </tr>
+        </thead>
+        <tbody>
+          {results.map((r, i) => {
+            const v = r.verdict || {};
+            return (
+              <tr key={i}>
+                <td><LeadTag lead={leadOf(checks, r)} /></td>
+                <td title={r.finalUrl || r.website}>{r.name || <span className="muted">—</span>}</td>
+                <td>{r.phone}</td>
+                <td>{r.city}</td>
+                <td className="muted">{domainOf(r.finalUrl || r.website) || (r.maps ? <span title={r.maps}>maps↗</span> : '')}</td>
+                <td><OpenCell s={r.businessStatus} /></td>
+                {cks.map((c) => <td key={c.key}><Verdict v={v[c.key]} want={c.want} /></td>)}
+                <td className="muted">{v.business_type || ''}</td>
+                <td><StatusTag status={r.status} /></td>
+                <td className="wrap-cell">{v.notes || r.error || ''}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
