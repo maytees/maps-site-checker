@@ -110,17 +110,15 @@ select { cursor: pointer; }
 .bar { height: 8px; background: var(--chip); border-radius: 5px; overflow: hidden; margin-top: 10px; }
 .bar i { display: block; height: 100%; width: 0; background: var(--good); transition: width .2s; }
 
-/* results table breaks out wider than the form column so you scroll less */
+/* fills the container; inner table scrolls horizontally without overflowing the page */
 .tbl-wrap {
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: 12px;
   margin-top: 16px;
   max-height: 78vh;
-  width: 94vw;
-  max-width: 94vw;
-  margin-left: 50%;
-  transform: translateX(-50%);
+  width: 100%;
+  max-width: 100%;
 }
 table { border-collapse: collapse; width: 100%; font-size: 13px; }
 th, td { text-align: left; padding: 8px 13px; border-bottom: 1px solid var(--line); white-space: nowrap; }
