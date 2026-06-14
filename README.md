@@ -136,6 +136,17 @@ For every site it fetches the homepage, reads `sitemap.xml`, and then follows th
 - The app sends `keep_alive: 30m` so the model stays loaded in RAM/VRAM for the whole run — no per-row reload. (First scan still pays a one-time load.)
 - Resolving from Maps links is the slow part; once you scrape the **site** field in the extension, that step disappears.
 
+## Saved progress (cache) — nothing is ever scanned twice
+
+Every finished business is written to **`data/cache.jsonl`** (a plain append-only file) the moment it's done. It's keyed by website domain + a hash of your checks/model.
+
+- **Crash or close the tab mid-run?** Just press **Scan** again. Already-done rows come back instantly (no fetch, no AI); only the un-scanned ones actually run. That's the resume — no special button.
+- **Re-import the same area later?** Repeat businesses are instant cache hits; only genuinely new ones cost time. The `♻ N cached` pill shows how many were served from cache.
+- Change a question / switch model → the hash changes → those re-scan (correct: the answer depends on the question).
+- Maps→website/phone lookups are cached too (keyed by the Maps link), so the headless browser doesn't re-open listings it already read.
+- **Ignore saved cache (re-scan fresh)** checkbox forces everything to run again. **Clear cache (N)** deletes the file. Your Call statuses / notes are separate (browser storage) and are NOT touched by clearing the cache.
+- The file survives server restarts. It's gitignored. Delete `data/cache.jsonl` to reset by hand.
+
 ## Notes
 
 - **Accuracy**: the AI only answers from the website's text and is told to say `unclear` rather than guess. Treat `unclear` as "look yourself". It's triage, not gospel — spot-check the **maybe** rows.

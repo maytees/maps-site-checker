@@ -1,17 +1,18 @@
 import { normalizeUrl, gatherSiteText } from '@/lib/site';
 import { classify } from '@/lib/ollama';
 import { log, warn, short } from '@/lib/log';
+import { cacheGet, cachePut, sigOf } from '@/lib/cache';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-// POST { website, businessName, model, instruction, checks:[{key,question}] }
-// -> { ok, status, verdict?, finalUrl?, pages?, error? }
+// POST { website, businessName, model, instruction, checks:[{key,question}], noCache }
+// -> { ok, status, verdict?, finalUrl?, pages?, cached?, error? }
 export async function POST(req) {
   let body;
   try { body = await req.json(); } catch { return json({ ok: false, status: 'bad-request', error: 'invalid body' }, 400); }
 
-  const { website, businessName, model, instruction, checks } = body || {};
+  const { website, businessName, model, instruction, checks, noCache } = body || {};
   if (!model) return json({ ok: false, status: 'error', error: 'no model selected' }, 400);
   if (!Array.isArray(checks) || !checks.length) return json({ ok: false, status: 'error', error: 'no checks defined' }, 400);
 
@@ -20,6 +21,13 @@ export async function POST(req) {
   const norm = normalizeUrl(website);
   if (!norm) { warn('scan', `✗ ${name}: no usable website`); return json({ ok: true, status: 'no-website', error: 'no usable website in this row' }); }
   if (norm.mapsOnly) { warn('scan', `✗ ${name}: maps link only`); return json({ ok: true, status: 'maps-only', error: 'only a Google Maps link — re-scrape with the website (site) field picked' }); }
+
+  // cache: keyed by domain + a hash of checks/model/instruction
+  const sig = sigOf(checks.map((c) => [c.key, c.question]), model, instruction || '');
+  if (!noCache) {
+    const hit = cacheGet('scan', norm.host, sig);
+    if (hit) { log('scan', `• ${name} (cached)`); return json({ ok: true, status: 'done', cached: true, ...hit }); }
+  }
 
   log('scan', `▶ ${name} — ${short(norm.url)}`);
   const site = await gatherSiteText(norm.url);
@@ -35,9 +43,7 @@ export async function POST(req) {
 
   const secs = ((Date.now() - t0) / 1000).toFixed(1);
   log('scan', `✓ ${name} done in ${secs}s →`, result.verdict, site.email ? `· email ${site.email}` : '');
-  return json({
-    ok: true,
-    status: 'done',
+  const payload = {
     finalUrl: site.finalUrl,
     pages: site.pages,
     pageUrls: site.pageUrls,
@@ -46,7 +52,9 @@ export async function POST(req) {
     emails: site.emails,
     socials: site.socials,
     sitePhone: site.sitePhone,
-  });
+  };
+  cachePut('scan', norm.host, sig, payload);
+  return json({ ok: true, status: 'done', ...payload });
 }
 
 function json(obj, status = 200) {

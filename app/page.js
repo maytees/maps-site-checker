@@ -149,7 +149,17 @@ export default function Page() {
   const [hideBox, setHideBox] = useState(false);
   const [crm, setCrm] = useState({});       // { key: { status, notes } } — persisted, survives re-import
   const [maybeModel, setMaybeModel] = useState('');
+  const [noCache, setNoCache] = useState(false);
+  const [cacheInfo, setCacheInfo] = useState({ total: 0, scan: 0, resolve: 0 });
   const stopRef = useRef(false);
+
+  async function refreshCache() { try { setCacheInfo(await fetch('/api/cache').then((x) => x.json())); } catch { /* ignore */ } }
+  async function clearCache() {
+    if (!confirm('Delete the saved scan cache? Future scans start fresh (your call statuses/notes are kept).')) return;
+    await fetch('/api/cache', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'clear' }) });
+    refreshCache();
+    flash('Cache cleared');
+  }
 
   // load the CRM store once
   useEffect(() => {
@@ -182,6 +192,7 @@ export default function Page() {
       if (c.model) setModel(c.model);
     } catch {}
     refreshModels();
+    refreshCache();
   }, []);
 
   // persist config
@@ -322,7 +333,7 @@ export default function Page() {
           try {
             rr = await fetch('/api/resolve', {
               method: 'POST', headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ mapsUrl: row.maps }),
+              body: JSON.stringify({ mapsUrl: row.maps, noCache }),
             }).then((x) => x.json());
           } catch (e) { rr = { status: 'failed', error: String(e) }; }
           if (rr.phone && !phone) phone = rr.phone;
@@ -346,7 +357,7 @@ export default function Page() {
           res = await fetch('/api/scan', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ website, businessName: row.name, model, instruction, checks: cleanChecks }),
+            body: JSON.stringify({ website, businessName: row.name, model, instruction, checks: cleanChecks, noCache }),
           }).then((x) => x.json());
         } catch (e) {
           res = { ok: false, status: 'error', error: String(e) };
@@ -364,6 +375,7 @@ export default function Page() {
             emails: res.emails || [],
             socials: res.socials || {},
             sitePhone: res.sitePhone || '',
+            cached: res.cached || false,
           };
           return c;
         });
@@ -375,6 +387,7 @@ export default function Page() {
     await Promise.all(Array.from({ length: n }, worker));
     setRunEnd(Date.now());
     setRunning(false);
+    refreshCache();
     if (dupCount) console.log(`Skipped ${dupCount} duplicate rows.`);
   }
 
@@ -410,13 +423,13 @@ export default function Page() {
         try {
           res = await fetch('/api/scan', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ website, businessName: row.name, model: mdl, instruction, checks: cleanChecks }),
+            body: JSON.stringify({ website, businessName: row.name, model: mdl, instruction, checks: cleanChecks, noCache }),
           }).then((x) => x.json());
         } catch (e) { res = { ok: false, status: 'error', error: String(e) }; }
         setResults((prev) => {
           const c = prev.slice();
           c[i] = { ...c[i], status: res.status || (res.ok ? 'done' : 'error'), verdict: res.verdict || c[i].verdict, error: res.error || '',
-            email: res.email || c[i].email, socials: res.socials || c[i].socials, phone: c[i].phone || res.sitePhone || '' };
+            email: res.email || c[i].email, socials: res.socials || c[i].socials, phone: c[i].phone || res.sitePhone || '', cached: res.cached || false };
           return c;
         });
         finished++; setDone(finished);
@@ -426,6 +439,7 @@ export default function Page() {
     await Promise.all(Array.from({ length: n }, worker));
     setRunEnd(Date.now());
     setRunning(false);
+    refreshCache();
   }
 
   // ---------- export ----------
@@ -473,6 +487,7 @@ export default function Page() {
   const counts = results ? results.reduce((a, r) => { a[r.status] = (a[r.status] || 0) + 1; return a; }, {}) : {};
   const total = runTotal || (results ? results.length : 0);
   const maybeCount = results ? results.filter((r) => leadOf(checks, r) === 'maybe').length : 0;
+  const cachedCount = results ? results.filter((r) => r.cached).length : 0;
   const elapsedMs = runStart ? (runEnd || Date.now()) - runStart : 0;
   const ratePerMin = elapsedMs > 1000 ? done / (elapsedMs / 60000) : 0;
   const remaining = total - done;
@@ -597,6 +612,15 @@ export default function Page() {
           {msg && <span className="pill ok">{msg}</span>}
         </div>
 
+        <div className="row mt small" style={{ gap: 12 }}>
+          <label className="row muted" style={{ gap: 6 }} title="Done businesses are saved to data/cache.jsonl. Re-running skips them instantly; tick this to force a fresh scan.">
+            <input type="checkbox" checked={noCache} onChange={(e) => setNoCache(e.target.checked)} />
+            Ignore saved cache (re-scan fresh)
+          </label>
+          <button className="sm ghost" onClick={clearCache} disabled={!cacheInfo.total}>Clear cache ({cacheInfo.total})</button>
+          <span className="muted tiny">{cacheInfo.scan} sites · {cacheInfo.resolve} maps saved — survives restarts, skips repeats on re-import</span>
+        </div>
+
         {results && maybeCount > 0 &&
           <div className="row mt small" style={{ gap: 8 }}>
             <span className="muted">Unsure rows?</span>
@@ -614,6 +638,7 @@ export default function Page() {
               <span className="pill">{done}/{total} done</span>
               <span className="pill" title="elapsed time">⏱ {fmtDur(elapsedMs)}</span>
               <span className="pill" title="businesses per minute">⚡ {ratePerMin ? ratePerMin.toFixed(1) : '—'}/min</span>
+              {cachedCount > 0 && <span className="pill" title="served instantly from the saved cache">♻ {cachedCount} cached</span>}
               {running && etaMs > 0 && <span className="pill" title="estimated time left">⏳ ~{fmtDur(etaMs)} left</span>}
             </div>
             <div className="row mt small muted" style={{ gap: 14 }}>
