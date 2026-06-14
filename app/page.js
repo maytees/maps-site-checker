@@ -62,6 +62,13 @@ function leadOf(checks, r) {
 }
 const oppose = (w) => (w === 'yes' ? 'no' : 'yes');
 function looksDomain(v) { return !!domainOf(v); }
+function fmtDur(ms) {
+  const s = Math.max(0, Math.round(ms / 1000));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), r = s % 60;
+  if (h) return `${h}h ${m}m`;
+  if (m) return `${m}m ${r}s`;
+  return `${r}s`;
+}
 function looksPhone(v) { const d = digits(v); return d.length >= 10 && d.length <= 13; }
 function looksAddress(v) { return /\d{1,6}\s+\S+/.test(v) && /,/.test(v); }
 
@@ -113,7 +120,17 @@ export default function Page() {
   const [results, setResults] = useState(null); // [{name,phone,city,website,maps,status,verdict,error}]
   const [running, setRunning] = useState(false);
   const [done, setDone] = useState(0);
+  const [runStart, setRunStart] = useState(0);
+  const [runEnd, setRunEnd] = useState(0);
+  const [, setTick] = useState(0); // forces a re-render every second while running
   const stopRef = useRef(false);
+
+  // tick the clock while a run is in progress
+  useEffect(() => {
+    if (!running) return;
+    const id = setInterval(() => setTick((t) => t + 1), 1000);
+    return () => clearInterval(id);
+  }, [running]);
 
   // load saved config
   useEffect(() => {
@@ -233,6 +250,8 @@ export default function Page() {
     const { rows, dupCount } = buildRows();
     setResults(rows.map((r) => ({ ...r })));
     setDone(0);
+    setRunStart(Date.now());
+    setRunEnd(0);
     setRunning(true);
     stopRef.current = false;
 
@@ -295,6 +314,7 @@ export default function Page() {
     };
     const n = Math.max(1, Math.min(10, concurrency));
     await Promise.all(Array.from({ length: n }, worker));
+    setRunEnd(Date.now());
     setRunning(false);
     if (dupCount) console.log(`Skipped ${dupCount} duplicate rows.`);
   }
@@ -339,6 +359,10 @@ export default function Page() {
   // ---------- derived ----------
   const counts = results ? results.reduce((a, r) => { a[r.status] = (a[r.status] || 0) + 1; return a; }, {}) : {};
   const total = results ? results.length : 0;
+  const elapsedMs = runStart ? (runEnd || Date.now()) - runStart : 0;
+  const ratePerMin = elapsedMs > 1000 ? done / (elapsedMs / 60000) : 0;
+  const remaining = total - done;
+  const etaMs = ratePerMin > 0 && remaining > 0 ? (remaining / ratePerMin) * 60000 : 0;
 
   // ---------- render ----------
   return (
@@ -460,8 +484,13 @@ export default function Page() {
         {results &&
           <>
             <div className="bar"><i style={{ width: total ? `${(done / total) * 100}%` : 0 }} /></div>
+            <div className="row mt small" style={{ gap: 14 }}>
+              <span className="pill">{done}/{total} done</span>
+              <span className="pill" title="elapsed time">⏱ {fmtDur(elapsedMs)}</span>
+              <span className="pill" title="businesses per minute">⚡ {ratePerMin ? ratePerMin.toFixed(1) : '—'}/min</span>
+              {running && etaMs > 0 && <span className="pill" title="estimated time left">⏳ ~{fmtDur(etaMs)} left</span>}
+            </div>
             <div className="row mt small muted" style={{ gap: 14 }}>
-              <span>{done}/{total} done</span>
               {Object.entries(counts).map(([k, v]) => <span key={k}><StatusTag status={k} /> {v}</span>)}
             </div>
             <ResultsTable results={results} checks={checks} />
