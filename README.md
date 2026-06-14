@@ -72,6 +72,7 @@ The defaults match the Petzio target — a staffed boarding/daycare facility tha
 Change or add your own; instruction + checks are remembered between runs. (If you previously ran the app, hit **↺ defaults** to load these.)
 
 - **Skip duplicates** (on): drops repeated phone numbers or website domains.
+- **Verify website before de-duplicating** (off): if your CSV has many rows sharing the *same wrong* URL, turn this on. It first opens each **Google Maps listing**, replaces the CSV website with the real one (and grabs phone/closed), and *only then* removes duplicates — so genuinely different businesses aren't dropped over a bad shared URL. Needs a Maps link column; slower (one headless-browser open per row, but cached). Duplicates are marked `duplicate` and skipped, not scanned.
 - **Resolve from Maps link** (on): see below.
 
 **4. Run & export** — press **Scan**. Each row runs live (progress bar + per-row status). The **Lead** column says **✓ call / maybe / skip** based on your Wants (a temporarily/permanently closed business is never a "call").

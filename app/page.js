@@ -138,6 +138,7 @@ export default function Page() {
   const [dedupe, setDedupe] = useState(true);
   const [resolveMaps, setResolveMaps] = useState(true);
   const [aiPick, setAiPick] = useState(true);
+  const [verifyWebsite, setVerifyWebsite] = useState(false);
   const [concurrency, setConcurrency] = useState(4);
 
   const [results, setResults] = useState(null); // [{name,phone,city,website,maps,status,verdict,error}]
@@ -190,6 +191,7 @@ export default function Page() {
       if (typeof c.dedupe === 'boolean') setDedupe(c.dedupe);
       if (typeof c.resolveMaps === 'boolean') setResolveMaps(c.resolveMaps);
       if (typeof c.aiPick === 'boolean') setAiPick(c.aiPick);
+      if (typeof c.verifyWebsite === 'boolean') setVerifyWebsite(c.verifyWebsite);
       if (c.concurrency) setConcurrency(c.concurrency);
       if (c.model) setModel(c.model);
     } catch {}
@@ -200,10 +202,10 @@ export default function Page() {
   // persist config
   useEffect(() => {
     const t = setTimeout(() => {
-      localStorage.setItem(LS, JSON.stringify({ instruction, checks, dedupe, resolveMaps, aiPick, concurrency, model }));
+      localStorage.setItem(LS, JSON.stringify({ instruction, checks, dedupe, resolveMaps, aiPick, verifyWebsite, concurrency, model }));
     }, 300);
     return () => clearTimeout(t);
-  }, [instruction, checks, dedupe, resolveMaps, aiPick, concurrency, model]);
+  }, [instruction, checks, dedupe, resolveMaps, aiPick, verifyWebsite, concurrency, model]);
 
   async function refreshModels() {
     setOllama({ state: 'checking', error: '' });
@@ -252,7 +254,7 @@ export default function Page() {
     });
   }
 
-  function buildRows() {
+  function buildRows(doDedup = dedupe) {
     const get = (i, r) => (i >= 0 && cols[i] ? cols[i][r] || '' : '');
     const out = [];
     const seenPhone = new Set();
@@ -270,7 +272,7 @@ export default function Page() {
       const dom = domainOf(realSite);
       const phoneClean = isBlankPhone(phoneRaw) ? '' : phoneRaw.trim();
       const ph = normPhone(phoneClean);
-      if (dedupe) {
+      if (doDedup) {
         const dPhone = ph && seenPhone.has(ph);
         const dDom = dom && seenDomain.has(dom);
         if (dPhone || dDom) { dupCount++; continue; }
@@ -280,6 +282,7 @@ export default function Page() {
       out.push({
         name,
         phone: phoneClean,
+        skip: false,
         city: cityFromAddress(cityaddr),
         website: realSite,
         maps: mapsUrl,
@@ -308,13 +311,63 @@ export default function Page() {
     return v;
   }
 
+  // Phase 1: open each Maps listing, replace the CSV website with the real one (+ phone/closed).
+  // Phase 2: de-dup on those VERIFIED websites & phones, marking duplicates row.skip.
+  async function verifyAndDedup(rows) {
+    let next = 0;
+    const work = async () => {
+      while (!stopRef.current) {
+        const i = next++;
+        if (i >= rows.length) break;
+        const row = rows[i];
+        if (!row.maps) continue; // nothing to verify against
+        setResults((prev) => { const c = prev.slice(); c[i] = { ...c[i], status: 'resolving' }; return c; });
+        let rr;
+        try {
+          rr = await fetch('/api/resolve', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mapsUrl: row.maps, noCache }),
+          }).then((x) => x.json());
+        } catch (e) { rr = { status: 'failed', error: String(e) }; }
+        if (rr.phone && !row.phone) row.phone = rr.phone;
+        if (rr.status === 'ok' && rr.website) { row.website = rr.website; row.finalUrl = rr.website; }
+        row.businessStatus = rr.businessStatus || row.businessStatus || '';
+        setResults((prev) => {
+          const c = prev.slice();
+          c[i] = { ...c[i], phone: row.phone, website: row.website, finalUrl: row.finalUrl, businessStatus: row.businessStatus, status: 'pending' };
+          return c;
+        });
+      }
+    };
+    const n = Math.max(1, Math.min(10, concurrency));
+    await Promise.all(Array.from({ length: n }, work));
+
+    if (!dedupe) return;
+    const seenDom = new Set(), seenPhone = new Set();
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const dom = domainOf(row.website);
+      const ph = normPhone(row.phone);
+      if ((dom && seenDom.has(dom)) || (ph && seenPhone.has(ph))) {
+        row.skip = true;
+        setResults((prev) => { const c = prev.slice(); c[i] = { ...c[i], status: 'duplicate' }; return c; });
+      } else {
+        if (dom) seenDom.add(dom);
+        if (ph) seenPhone.add(ph);
+      }
+    }
+  }
+
   async function run() {
     if (map.website < 0 && map.maps < 0) { alert('Map a Website column, or a Google Maps link column to resolve from (step 2).'); return; }
     if (!model) { alert('Pick a model (step 3). Is Ollama running?'); return; }
     const cleanChecks = getCleanChecks();
     if (!cleanChecks.length) { alert('Add at least one check (step 3).'); return; }
 
-    const { rows, dupCount } = buildRows();
+    // verify mode: resolve the real website from each Maps listing BEFORE de-duping,
+    // so wrong/duplicate URLs in the CSV don't drop genuinely distinct businesses
+    const verify = verifyWebsite && map.maps >= 0;
+    const { rows, dupCount } = buildRows(verify ? false : dedupe);
     setResults(rows.map((r) => ({ ...r })));
     setDone(0);
     setRunTotal(rows.length);
@@ -324,6 +377,14 @@ export default function Page() {
     setHideBox(false);
     stopRef.current = false;
 
+    if (verify) {
+      await verifyAndDedup(rows);
+      setDone(0);           // reset progress/rate for the scan phase
+      setRunStart(Date.now());
+      setRunEnd(0);
+    }
+    setRunTotal(rows.filter((r) => !r.skip).length);
+
     let next = 0;
     let finished = 0;
     const total = rows.length;
@@ -332,6 +393,7 @@ export default function Page() {
         const i = next++;
         if (i >= total) break;
         const row = rows[i];
+        if (row.skip) continue; // verified duplicate — don't scan
         let website = row.website;
         let phone = row.phone;
 
@@ -617,6 +679,12 @@ export default function Page() {
             <input type="checkbox" checked={aiPick} onChange={(e) => setAiPick(e.target.checked)} />
             🧠 Let the AI pick which pages to read from the sitemap (smarter than keyword matching; +1 quick AI call per site). Off = faster, keyword-picked.
           </label>
+          <label className="row small muted" style={{ gap: 7, marginTop: 6 }}>
+            <input type="checkbox" checked={verifyWebsite} onChange={(e) => setVerifyWebsite(e.target.checked)} />
+            🔁 Verify each website from its Google Maps listing BEFORE de-duplicating (fixes CSVs where many rows share a wrong/duplicate URL — dedup then uses the real sites). Needs a Maps link column; uses the headless browser, slower.
+          </label>
+          {verifyWebsite && map.maps < 0 &&
+            <span className="pill err" style={{ marginTop: 4 }}>Map a <b>Google Maps link</b> column (step 2) for verification to run.</span>}
         </div>
       </section>
 
@@ -722,6 +790,7 @@ function StatusTag({ status }) {
     'no-website': 'no website', 'maps-only': 'maps link only',
     'resolve-failed': "couldn't open maps", 'maps-blocked': 'google blocked',
     'fetch-failed': 'site unreachable', 'empty-site': 'no text', 'ai-error': 'AI error', error: 'error',
+    duplicate: 'duplicate',
   };
   return <span className={`tag status-${status}`}>{labelMap[status] || status}</span>;
 }

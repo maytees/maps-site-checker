@@ -146,6 +146,7 @@ td a:hover { text-decoration: underline; }
 .tag.status-running, .tag.status-resolving { background: #1f2b40; color: #8db4ff; }
 .tag.status-error, .tag.status-fetch-failed, .tag.status-ai-error, .tag.status-empty-site, .tag.status-resolve-failed, .tag.status-maps-blocked { background: var(--bad-bg); color: #f0a0a0; }
 .tag.status-no-website, .tag.status-maps-only { background: var(--warn-bg); color: var(--warn); }
+.tag.status-duplicate { background: #23262e; color: var(--muted-2); }
 
 .toolbar { position: sticky; bottom: 0; background: linear-gradient(transparent, var(--bg) 30%); padding-top: 16px; }
 .spin { display: inline-block; width: 12px; height: 12px; border: 2px solid #ffffff55; border-top-color: #fff; border-radius: 50%; animation: sp .7s linear infinite; vertical-align: -1px; }
