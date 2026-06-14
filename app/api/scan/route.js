@@ -1,5 +1,5 @@
 import { normalizeUrl, gatherSiteText } from '@/lib/site';
-import { classify } from '@/lib/ollama';
+import { classify, pickPages } from '@/lib/ollama';
 import { log, warn, short } from '@/lib/log';
 import { cacheGet, cachePut, sigOf } from '@/lib/cache';
 
@@ -12,7 +12,7 @@ export async function POST(req) {
   let body;
   try { body = await req.json(); } catch { return json({ ok: false, status: 'bad-request', error: 'invalid body' }, 400); }
 
-  const { website, businessName, model, instruction, checks, noCache } = body || {};
+  const { website, businessName, model, instruction, checks, noCache, aiPick } = body || {};
   if (!model) return json({ ok: false, status: 'error', error: 'no model selected' }, 400);
   if (!Array.isArray(checks) || !checks.length) return json({ ok: false, status: 'error', error: 'no checks defined' }, 400);
 
@@ -22,15 +22,17 @@ export async function POST(req) {
   if (!norm) { warn('scan', `✗ ${name}: no usable website`); return json({ ok: true, status: 'no-website', error: 'no usable website in this row' }); }
   if (norm.mapsOnly) { warn('scan', `✗ ${name}: maps link only`); return json({ ok: true, status: 'maps-only', error: 'only a Google Maps link — re-scrape with the website (site) field picked' }); }
 
-  // cache: keyed by domain + a hash of checks/model/instruction
-  const sig = sigOf(checks.map((c) => [c.key, c.question, c.want || '']), model, instruction || '');
+  // cache: keyed by domain + a hash of checks/model/instruction/page-selection mode
+  const sig = sigOf(checks.map((c) => [c.key, c.question, c.want || '']), model, instruction || '', aiPick ? 'ai' : 'rx');
   if (!noCache) {
     const hit = cacheGet('scan', norm.host, sig);
     if (hit) { log('scan', `• ${name} (cached)`); return json({ ok: true, status: 'done', cached: true, ...hit }); }
   }
 
   log('scan', `▶ ${name} — ${short(norm.url)}`);
-  const site = await gatherSiteText(norm.url);
+  // AI picks which pages to read (regex shortlist + regex fallback inside gatherSiteText)
+  const pick = aiPick ? (candidates) => pickPages({ model, businessName: name, checks, candidates }) : undefined;
+  const site = await gatherSiteText(norm.url, { pick });
   if (!site.ok) { warn('scan', `✗ ${name}: fetch-failed (${site.error})`); return json({ ok: true, status: 'fetch-failed', finalUrl: norm.url, error: site.error }); }
   log('site', `  ${name}: read ${site.pages} page(s) [${(site.pageUrls || []).map((u) => short(u, 40)).join(', ')}]${site.signals && Object.keys(site.signals).length ? '  signals ' + JSON.stringify(site.signals) : ''}`);
   if (!site.text || site.text.replace(/# PAGE:.*$/gm, '').trim().length < 40) {

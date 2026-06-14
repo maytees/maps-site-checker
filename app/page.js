@@ -137,6 +137,7 @@ export default function Page() {
   const [checks, setChecks] = useState(DEFAULT_CHECKS);
   const [dedupe, setDedupe] = useState(true);
   const [resolveMaps, setResolveMaps] = useState(true);
+  const [aiPick, setAiPick] = useState(true);
   const [concurrency, setConcurrency] = useState(4);
 
   const [results, setResults] = useState(null); // [{name,phone,city,website,maps,status,verdict,error}]
@@ -188,6 +189,7 @@ export default function Page() {
       if (Array.isArray(c.checks) && c.checks.length) setChecks(c.checks);
       if (typeof c.dedupe === 'boolean') setDedupe(c.dedupe);
       if (typeof c.resolveMaps === 'boolean') setResolveMaps(c.resolveMaps);
+      if (typeof c.aiPick === 'boolean') setAiPick(c.aiPick);
       if (c.concurrency) setConcurrency(c.concurrency);
       if (c.model) setModel(c.model);
     } catch {}
@@ -198,10 +200,10 @@ export default function Page() {
   // persist config
   useEffect(() => {
     const t = setTimeout(() => {
-      localStorage.setItem(LS, JSON.stringify({ instruction, checks, dedupe, resolveMaps, concurrency, model }));
+      localStorage.setItem(LS, JSON.stringify({ instruction, checks, dedupe, resolveMaps, aiPick, concurrency, model }));
     }, 300);
     return () => clearTimeout(t);
-  }, [instruction, checks, dedupe, resolveMaps, concurrency, model]);
+  }, [instruction, checks, dedupe, resolveMaps, aiPick, concurrency, model]);
 
   async function refreshModels() {
     setOllama({ state: 'checking', error: '' });
@@ -365,7 +367,7 @@ export default function Page() {
           res = await fetch('/api/scan', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ website, businessName: row.name, model, instruction, checks: cleanChecks, noCache }),
+            body: JSON.stringify({ website, businessName: row.name, model, instruction, checks: cleanChecks, noCache, aiPick }),
           }).then((x) => x.json());
         } catch (e) {
           res = { ok: false, status: 'error', error: String(e) };
@@ -431,7 +433,7 @@ export default function Page() {
         try {
           res = await fetch('/api/scan', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ website, businessName: row.name, model: mdl, instruction, checks: cleanChecks, noCache }),
+            body: JSON.stringify({ website, businessName: row.name, model: mdl, instruction, checks: cleanChecks, noCache, aiPick }),
           }).then((x) => x.json());
         } catch (e) { res = { ok: false, status: 'error', error: String(e) }; }
         setResults((prev) => {
@@ -604,6 +606,10 @@ export default function Page() {
           <label className="row small muted" style={{ gap: 7, marginTop: 6 }}>
             <input type="checkbox" checked={resolveMaps} onChange={(e) => setResolveMaps(e.target.checked)} />
             Resolve the website from the Google Maps link when a row has no site (headless browser — slower, needed for Maps-link-only CSVs)
+          </label>
+          <label className="row small muted" style={{ gap: 7, marginTop: 6 }}>
+            <input type="checkbox" checked={aiPick} onChange={(e) => setAiPick(e.target.checked)} />
+            🧠 Let the AI pick which pages to read from the sitemap (smarter than keyword matching; +1 quick AI call per site). Off = faster, keyword-picked.
           </label>
         </div>
       </section>
