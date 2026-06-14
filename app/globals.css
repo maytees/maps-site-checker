@@ -109,6 +109,9 @@ select { cursor: pointer; }
 
 .bar { height: 8px; background: var(--chip); border-radius: 5px; overflow: hidden; margin-top: 10px; }
 .bar i { display: block; height: 100%; width: 0; background: var(--good); transition: width .2s; }
+.bar i.blue { background: #5b8cff; }
+.vphase { margin-top: 14px; padding: 10px 12px; background: var(--panel-2); border: 1px solid var(--line-2); border-radius: 10px; }
+.vphase .bar { margin-top: 8px; }
 
 /* fills the container; inner table scrolls horizontally without overflowing the page */
 .tbl-wrap {

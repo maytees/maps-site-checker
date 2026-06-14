@@ -147,6 +147,12 @@ export default function Page() {
   const [runStart, setRunStart] = useState(0);
   const [runEnd, setRunEnd] = useState(0);
   const [runTotal, setRunTotal] = useState(0);
+  // separate progress for the verify-website phase
+  const [vDoneN, setVDoneN] = useState(0);
+  const [vTotalN, setVTotalN] = useState(0);
+  const [vStart, setVStart] = useState(0);
+  const [vEnd, setVEnd] = useState(0);
+  const [vCachedN, setVCachedN] = useState(0);
   const [, setTick] = useState(0); // forces a re-render every second while running
   const [hideBox, setHideBox] = useState(false);
   const [crm, setCrm] = useState({});       // { key: { status, notes } } — persisted, survives re-import
@@ -314,7 +320,9 @@ export default function Page() {
   // Phase 1: open each Maps listing, replace the CSV website with the real one (+ phone/closed).
   // Phase 2: de-dup on those VERIFIED websites & phones, marking duplicates row.skip.
   async function verifyAndDedup(rows) {
-    let next = 0;
+    setVTotalN(rows.filter((r) => r.maps).length);
+    setVDoneN(0); setVCachedN(0); setVStart(Date.now()); setVEnd(0);
+    let next = 0, vDone = 0, vCached = 0;
     const work = async () => {
       while (!stopRef.current) {
         const i = next++;
@@ -337,10 +345,13 @@ export default function Page() {
           c[i] = { ...c[i], phone: row.phone, website: row.website, finalUrl: row.finalUrl, businessStatus: row.businessStatus, status: 'pending' };
           return c;
         });
+        vDone++; setVDoneN(vDone);
+        if (rr.cached) { vCached++; setVCachedN(vCached); }
       }
     };
     const n = Math.max(1, Math.min(10, concurrency));
     await Promise.all(Array.from({ length: n }, work));
+    setVEnd(Date.now());
 
     if (!dedupe) return;
     const seenDom = new Set(), seenPhone = new Set();
@@ -370,6 +381,7 @@ export default function Page() {
     const { rows, dupCount } = buildRows(verify ? false : dedupe);
     setResults(rows.map((r) => ({ ...r })));
     setDone(0);
+    setVTotalN(0);
     setRunTotal(rows.length);
     setRunStart(Date.now());
     setRunEnd(0);
@@ -563,6 +575,9 @@ export default function Page() {
   const emailCount = results ? results.filter((r) => r.email).length : 0;
   const phoneCount = results ? results.filter((r) => r.phone).length : 0;
   const cachedCount = results ? results.filter((r) => r.cached).length : 0;
+  const vElapsedMs = vStart ? (vEnd || Date.now()) - vStart : 0;
+  const vRatePerMin = vElapsedMs > 1000 && (vDoneN - vCachedN) > 0 ? (vDoneN - vCachedN) / (vElapsedMs / 60000) : 0;
+  const vActive = vTotalN > 0 && vDoneN < vTotalN && !vEnd;
   const elapsedMs = runStart ? (runEnd || Date.now()) - runStart : 0;
   // rate = REAL scans per minute (cached hits are ~instant and would inflate it)
   const realDone = Math.max(0, done - cachedCount);
@@ -721,6 +736,18 @@ export default function Page() {
 
         {results &&
           <>
+            {vTotalN > 0 &&
+              <div className="vphase">
+                <div className="row spread small">
+                  <b style={{ color: '#9ec1ff' }}>🔁 {vActive ? 'Verifying websites from Google Maps…' : 'Website verification done'}</b>
+                  <span className="muted">
+                    {vDoneN}/{vTotalN} · ⚡ {vRatePerMin ? vRatePerMin.toFixed(1) : '—'}/min
+                    {vCachedN > 0 ? ` · ♻ ${vCachedN} cached` : ''}
+                    {vActive ? ` · ⏱ ${fmtDur(vElapsedMs)}` : ''}
+                  </span>
+                </div>
+                <div className="bar"><i className="blue" style={{ width: vTotalN ? `${(vDoneN / vTotalN) * 100}%` : 0 }} /></div>
+              </div>}
             <div className="bar"><i style={{ width: total ? `${(done / total) * 100}%` : 0 }} /></div>
             <div className="row mt small" style={{ gap: 14 }}>
               <span className="pill">{done}/{total} done</span>
