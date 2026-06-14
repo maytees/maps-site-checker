@@ -38,7 +38,7 @@ export async function POST(req) {
     return json({ ok: true, status: 'empty-site', finalUrl: site.finalUrl, error: 'site had no readable text (likely JS-only)' });
   }
 
-  const result = await classify({ model, checks, instruction, businessName, text: site.text, signals: site.signals });
+  const result = await classify({ model, checks, instruction, businessName, text: site.text, signals: site.signals, pageUrls: site.pageUrls });
   if (!result.ok) { warn('scan', `✗ ${name}: ai-error (${result.error})`); return json({ ok: false, status: 'ai-error', finalUrl: site.finalUrl, error: result.error }, 200); }
 
   const secs = ((Date.now() - t0) / 1000).toFixed(1);

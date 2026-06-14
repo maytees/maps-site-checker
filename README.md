@@ -112,7 +112,7 @@ The resolved site shows up in the **Site** column of the results so you can see 
 
 ## How it reads each website
 
-For every site it fetches the homepage, reads `sitemap.xml`, and then follows the most relevant inner pages **in parallel** — boarding, services, amenities, about, pricing, and anything that looks webcam-related (this is why a vet that hides "boarding" on a `/services` page is now caught). It strips all those pages to text, runs a keyword pre-scan for webcam/boarding/vet/team signals, and hands the lot to the model with those signals as hints. The model is told to read every page and only say `unclear` when the text truly doesn't say.
+For every site it fetches the homepage, reads `sitemap.xml` **including nested/child sitemaps** (an index → all its child sitemaps), and then follows the most relevant inner pages **in parallel** — webcams (highest priority), boarding, services, amenities, about, pricing (this is why a `/live-web-cams` page buried in a nested sitemap, or a vet that hides "boarding" on a `/services` page, is now caught). A page that simply *exists* for a feature (e.g. `/live-web-cams`) is passed to the model as strong evidence the feature exists. It strips all those pages to text, runs a keyword pre-scan for webcam/boarding/vet/team signals, and hands the lot to the model with those signals as hints. The model is told to read every page and only say `unclear` when the text truly doesn't say.
 
 ## Row statuses you'll see
 
