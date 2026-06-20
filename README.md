@@ -153,7 +153,7 @@ Setup: add your Serper key to **`.env`** in the project root:
 SERPER_API_KEY=your_key_here
 ```
 
-Get a free key at [serper.dev](https://serper.dev) (2,500 searches free, then ~$0.30–1 per 1,000). Results are **cached by domain** like everything else, so re-runs don't re-spend credits. Without the key, the columns just come back empty (no error). Many small businesses' owners aren't on LinkedIn — empty is normal.
+Get a free key at [serper.dev](https://serper.dev) (2,500 searches free, then ~$0.30–1 per 1,000). Results are **cached by domain** like everything else, so re-runs don't re-spend credits. Without the key, the columns just come back empty (no error). Many small businesses' owners aren't on LinkedIn — empty is normal. **Clear owner cache** (next to Clear cache) wipes only the owner/LinkedIn results so you can re-enrich, leaving the scan/maps caches intact.
 
 ### Enrich without re-scanning
 

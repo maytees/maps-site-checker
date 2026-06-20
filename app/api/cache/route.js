@@ -11,7 +11,7 @@ export async function GET() {
 export async function POST(req) {
   const body = await req.json().catch(() => ({}));
   if (body.action === 'clear') {
-    await cacheClear();
+    await cacheClear(body.kind); // body.kind === 'owner' clears just enrichment; omit = everything
     return Response.json({ ok: true, ...cacheStats() });
   }
   return Response.json({ ok: false, error: 'unknown action' }, { status: 400 });

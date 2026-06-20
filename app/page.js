@@ -193,11 +193,14 @@ export default function Page() {
   const stopRef = useRef(false);
 
   async function refreshCache() { try { setCacheInfo(await fetch('/api/cache').then((x) => x.json())); } catch { /* ignore */ } }
-  async function clearCache() {
-    if (!confirm('Delete the saved scan cache? Future scans start fresh (your call statuses/notes are kept).')) return;
-    await fetch('/api/cache', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'clear' }) });
+  async function clearCache(kind) {
+    const owner = kind === 'owner';
+    if (!confirm(owner
+      ? 'Delete only the saved owner/LinkedIn cache? Scan & maps caches are kept; next enrichment re-runs fresh.'
+      : 'Delete the whole saved cache (scans, maps, owners)? Your call statuses/notes are kept.')) return;
+    await fetch('/api/cache', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'clear', kind }) });
     refreshCache();
-    flash('Cache cleared');
+    flash(owner ? 'Owner cache cleared' : 'Cache cleared');
   }
 
   // load the CRM store once
@@ -800,8 +803,9 @@ export default function Page() {
             <input type="checkbox" checked={noCache} onChange={(e) => setNoCache(e.target.checked)} />
             Ignore saved cache (re-scan fresh)
           </label>
-          <button className="sm ghost" onClick={clearCache} disabled={!cacheInfo.total}>Clear cache ({cacheInfo.total})</button>
-          <span className="muted tiny">{cacheInfo.scan} sites · {cacheInfo.resolve} maps saved — survives restarts, skips repeats on re-import</span>
+          <button className="sm ghost" onClick={() => clearCache()} disabled={!cacheInfo.total}>Clear cache ({cacheInfo.total})</button>
+          <button className="sm ghost" onClick={() => clearCache('owner')} disabled={!cacheInfo.owner} title="Clears only the owner/LinkedIn cache">Clear owner cache ({cacheInfo.owner || 0})</button>
+          <span className="muted tiny">{cacheInfo.scan} sites · {cacheInfo.resolve} maps · {cacheInfo.owner || 0} owners saved — survives restarts, skips repeats</span>
         </div>
 
         {results && maybeCount > 0 &&
