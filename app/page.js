@@ -126,6 +126,7 @@ function guessIndex(headers, cols, kind) {
     let best = -1, bf = 0.4; cols.forEach((_, i2) => { const f = frac(i2, looksAddress); if (f > bf) { bf = f; best = i2; } }); return best;
   }
   if (kind === 'maps') { return hHit(/maps|link|google/); }
+  if (kind === 'lead') { return hHit(/^lead|valid lead|^valid|is.?lead/); }
   return -1;
 }
 
@@ -137,7 +138,7 @@ export default function Page() {
   const [fileName, setFileName] = useState('');
   const [over, setOver] = useState(false);
 
-  const [map, setMap] = useState({ name: -1, phone: -1, website: -1, cityaddr: -1, maps: -1 });
+  const [map, setMap] = useState({ name: -1, phone: -1, website: -1, cityaddr: -1, maps: -1, lead: -1 });
 
   const [models, setModels] = useState([]);
   const [model, setModel] = useState('');
@@ -283,6 +284,7 @@ export default function Page() {
           website: guessIndex(raw, colArr, 'website'),
           cityaddr: guessIndex(raw, colArr, 'cityaddr'),
           maps: guessIndex(raw, colArr, 'maps'),
+          lead: guessIndex(raw, colArr, 'lead'),
         });
       },
     });
@@ -312,6 +314,7 @@ export default function Page() {
         name,
         phone: phoneClean,
         skip: false,
+        importedLead: map.lead >= 0 ? get(map.lead, r).trim() : '',
         city: cityFromAddress(cityaddr),
         website: realSite,
         maps: mapsUrl,
@@ -374,6 +377,64 @@ export default function Page() {
       c[i] = { ...c[i], phone: row.phone || res.sitePhone || '', status: res.status || (res.ok ? 'done' : 'error'), verdict: applyUnsureRule(res.verdict) || null, error: res.error || '', finalUrl: res.finalUrl || website, email: res.email || '', emails: res.emails || [], socials: res.socials || {}, sitePhone: res.sitePhone || '', cached: res.cached || false };
       return c;
     });
+  }
+
+  // Serper owner/LinkedIn enrichment over the given result indices. rowsSource provides
+  // website/name (the live results, or freshly-built rows); owner fields written into results[i].
+  async function enrichPhase(idxs, rowsSource) {
+    let en = 0, eNext = 0;
+    const eWork = async () => {
+      while (!stopRef.current) {
+        const k = eNext++;
+        if (k >= idxs.length) break;
+        const i = idxs[k];
+        const r = rowsSource[i];
+        setRetryMsg(`🔗 finding owner + LinkedIn — ${en}/${idxs.length}`);
+        let res;
+        try {
+          res = await fetch('/api/enrich', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ website: r.finalUrl || r.website, businessName: r.name, model, noCache }),
+          }).then((x) => x.json());
+        } catch (e) { res = {}; }
+        setResults((p) => { const c = p.slice(); c[i] = { ...c[i], ownerName: res.ownerName || '', ownerTitle: res.ownerTitle || '', linkedinUrl: res.linkedinUrl || '' }; return c; });
+        en++; setDone(en);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.max(1, Math.min(4, concurrency)) }, eWork));
+    setRetryMsg('');
+    refreshCache();
+  }
+
+  // Standalone: enrich WITHOUT re-scanning. Works on current results, or on a re-imported CSV
+  // (map a "Valid lead" column to only enrich the yes rows; otherwise it enriches everything).
+  async function enrichRun() {
+    if (running) return;
+    if (!model) { alert('Pick a model (step 3). Is Ollama running?'); return; }
+    if (map.website < 0 && map.maps < 0) { alert('Map a Website (or Maps link) column (step 2).'); return; }
+
+    let src = resultsRef.current;
+    if (!src || !src.length) {
+      const { rows } = buildRows(dedupe);
+      setResults(rows.map((r) => ({ ...r })));
+      src = rows;
+    }
+    const yesLead = (v) => String(v || '').trim().toLowerCase() === 'yes';
+    const eligible = (r) => {
+      if (r.linkedinUrl) return false;                        // already has one
+      if (!(r.finalUrl || r.website) && !r.maps) return false; // nothing to search from
+      if (r.verdict) return leadOf(checks, r) === 'yes';       // scanned this session → use the verdict
+      if (map.lead >= 0) return yesLead(r.importedLead);       // re-imported CSV → use its lead column
+      return true;                                             // no verdict + no lead column → enrich all rows
+    };
+    const idxs = [];
+    src.forEach((r, i) => { if (!r.skip && eligible(r)) idxs.push(i); });
+    if (!idxs.length) { alert('No eligible rows to enrich. Need a website, and (for a re-imported CSV) either a mapped "Valid lead" column = yes, or no lead column to enrich all.'); return; }
+
+    setRunning(true); setHideBox(false); stopRef.current = false;
+    setDone(0); setRunTotal(idxs.length); setRunStart(Date.now()); setRunEnd(0);
+    await enrichPhase(idxs, src);
+    setRunEnd(Date.now()); setRunning(false);
   }
 
   // Sleep `secs`, showing a live countdown in retryMsg. Bails early if stopped.
@@ -472,30 +533,7 @@ export default function Page() {
         const r = cur[i];
         if (r && !r.skip && leadOf(checks, r) === 'yes' && (r.finalUrl || r.website) && !r.linkedinUrl) idxs.push(i);
       }
-      if (idxs.length) {
-        let en = 0, eNext = 0;
-        const eWork = async () => {
-          while (!stopRef.current) {
-            const k = eNext++;
-            if (k >= idxs.length) break;
-            const i = idxs[k];
-            const r = resultsRef.current[i];
-            setRetryMsg(`🔗 finding owner + LinkedIn for leads — ${en}/${idxs.length}`);
-            let res;
-            try {
-              res = await fetch('/api/enrich', {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ website: r.finalUrl || r.website, businessName: r.name, model, noCache }),
-              }).then((x) => x.json());
-            } catch (e) { res = {}; }
-            setResults((p) => { const c = p.slice(); c[i] = { ...c[i], ownerName: res.ownerName || '', ownerTitle: res.ownerTitle || '', linkedinUrl: res.linkedinUrl || '' }; return c; });
-            en++;
-          }
-        };
-        await Promise.all(Array.from({ length: Math.max(1, Math.min(4, concurrency)) }, eWork));
-        setRetryMsg('');
-        refreshCache();
-      }
+      if (idxs.length) await enrichPhase(idxs, cur);
     }
 
     setRunEnd(Date.now());
@@ -642,6 +680,7 @@ export default function Page() {
           <ColSelect label="Website / site  (required)" headers={headers} value={map.website} onChange={(v) => setMap({ ...map, website: v })} cols={cols} />
           <ColSelect label="City or Address" headers={headers} value={map.cityaddr} onChange={(v) => setMap({ ...map, cityaddr: v })} cols={cols} hint="city is auto-parsed from an address" />
           <ColSelect label="Google Maps link (optional)" headers={headers} value={map.maps} onChange={(v) => setMap({ ...map, maps: v })} cols={cols} />
+          <ColSelect label="Valid lead (optional)" headers={headers} value={map.lead} onChange={(v) => setMap({ ...map, lead: v })} cols={cols} hint="for Enrich-only on a re-imported CSV: enrich rows where this = yes" />
         </div>
         {headers && map.website < 0 && map.maps >= 0 &&
           <div className="pill mt2">No website column — that's fine: it'll open each <b>Google Maps link</b> in a headless browser and read the site automatically (slower). Toggle in step 3.</div>}
@@ -751,6 +790,8 @@ export default function Page() {
           {!running
             ? <button className="primary" onClick={run} disabled={!headers || (map.website < 0 && map.maps < 0) || !model}>▶ Scan {rowCount ? `${rowCount} rows` : ''}</button>
             : <button className="danger" onClick={stop}><span className="spin" /> Stop</button>}
+          {!running &&
+            <button onClick={enrichRun} disabled={!headers || (map.website < 0 && map.maps < 0) || !model} title="Find owner + LinkedIn only — no scanning. Uses current results, or a re-imported CSV (map a Valid lead column to filter).">🔗 Enrich leads only</button>}
           <button onClick={exportCSV} disabled={!results}>⬇ Export CSV</button>
           <button onClick={copyTSV} disabled={!results}>⧉ Copy for Sheets</button>
           {msg && <span className="pill ok">{msg}</span>}

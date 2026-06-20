@@ -155,6 +155,12 @@ SERPER_API_KEY=your_key_here
 
 Get a free key at [serper.dev](https://serper.dev) (2,500 searches free, then ~$0.30–1 per 1,000). Results are **cached by domain** like everything else, so re-runs don't re-spend credits. Without the key, the columns just come back empty (no error). Many small businesses' owners aren't on LinkedIn — empty is normal.
 
+### Enrich without re-scanning
+
+Already scanned and just want to add owners/LinkedIn? Use **🔗 Enrich leads only** (next to Scan) — it does the Serper lookup **without re-scanning**:
+- **On your current results** → enriches the `lead = ✓ call` rows in place.
+- **On a previous run's exported CSV** → re-import that CSV, map the **Website** + **Name** columns and (optionally) the **Valid lead** column, then click **Enrich leads only**. With a Valid-lead column mapped it enriches only the `yes` rows; without it, it enriches every row. No scanning, no Ollama verdicts re-run.
+
 ## Speed
 
 - **Parallel** number (1–10, default 4) = how many businesses run at once. Higher is faster but heavier; 4–6 is a good range on this Mac.
