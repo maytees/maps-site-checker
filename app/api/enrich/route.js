@@ -1,6 +1,7 @@
 import { normalizeUrl, gatherSiteText } from '@/lib/site';
 import { findDecisionMaker } from '@/lib/enrich';
 import { cacheGet, cachePut } from '@/lib/cache';
+import { log } from '@/lib/log';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -12,7 +13,7 @@ export const maxDuration = 60;
 export async function POST(req) {
   let body;
   try { body = await req.json(); } catch { return json({ ok: false, error: 'invalid body' }, 400); }
-  const { website, businessName, model, noCache } = body || {};
+  const { website, businessName, model, noCache, city } = body || {};
   if (!model) return json({ ok: false, error: 'no model selected' }, 400);
 
   const norm = normalizeUrl(website);
@@ -28,9 +29,12 @@ export async function POST(req) {
   let siteText = '';
   if (norm && !norm.mapsOnly) {
     const site = await gatherSiteText(norm.url);
-    if (site.ok) siteText = site.text;
+    if (site.ok) { siteText = site.text; log('enrich', `crawled ${domain} → ${site.pages} pages, ${siteText.length} chars`); }
+    else log('enrich', `crawl failed for ${domain}: ${site.error}`);
+  } else {
+    log('enrich', `no crawlable website for ${businessName || domain} (got: ${String(website).slice(0, 50)})`);
   }
-  const dm = await findDecisionMaker({ model, businessName, siteText });
+  const dm = await findDecisionMaker({ model, businessName, siteText, city });
   cachePut('owner', domain, '', dm);
   return json({ ok: true, ...dm });
 }

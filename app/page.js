@@ -59,6 +59,16 @@ function isBlankPhone(v) {
   const s = String(v || '').trim();
   return !s || /^[\s\-–—·•|/.]+$/.test(s) || /^(n\/?a|none|null|tbd|n\.a\.?|-)$/i.test(s);
 }
+// POST JSON with a hard timeout — a stalled request aborts instead of hanging a worker forever.
+async function postJson(url, body, ms = 120000) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  try {
+    const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: ctrl.signal });
+    return await r.json();
+  } finally { clearTimeout(t); }
+}
+
 function fmtPhone(v) {
   if (!v) return '';
   let n = String(v).replace(/[^\d+]/g, '');
@@ -350,10 +360,7 @@ export default function Page() {
     setResults((prev) => { const c = prev.slice(); c[i] = { ...c[i], status: 'resolving' }; return c; });
     let rr;
     try {
-      rr = await fetch('/api/resolve', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mapsUrl: row.maps, noCache, ...resolveOpts() }),
-      }).then((x) => x.json());
+      rr = await postJson('/api/resolve', { mapsUrl: row.maps, noCache, ...resolveOpts() }, 90000);
     } catch (e) { rr = { status: 'failed', error: String(e) }; }
     if (rr.phone && !row.phone) row.phone = rr.phone;
     if (rr.status === 'ok' && rr.website) { row.website = rr.website; row.finalUrl = rr.website; }
@@ -367,10 +374,7 @@ export default function Page() {
     setResults((prev) => { const c = prev.slice(); c[i] = { ...c[i], status: 'running' }; return c; });
     let res;
     try {
-      res = await fetch('/api/scan', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ website, businessName: row.name, model, instruction, checks: cleanChecks, noCache, aiPick }),
-      }).then((x) => x.json());
+      res = await postJson('/api/scan', { website, businessName: row.name, model, instruction, checks: cleanChecks, noCache, aiPick }, 180000);
     } catch (e) { res = { ok: false, status: 'error', error: String(e) }; }
     setResults((prev) => {
       const c = prev.slice();
@@ -392,11 +396,8 @@ export default function Page() {
         setRetryMsg(`🔗 finding owner + LinkedIn — ${en}/${idxs.length}`);
         let res;
         try {
-          res = await fetch('/api/enrich', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ website: r.finalUrl || r.website, businessName: r.name, model, noCache }),
-          }).then((x) => x.json());
-        } catch (e) { res = {}; }
+          res = await postJson('/api/enrich', { website: r.finalUrl || r.website, businessName: r.name, city: r.city || '', model, noCache }, 120000);
+        } catch (e) { res = { error: String(e) }; } // timeout/abort/network → leave empty, keep going
         setResults((p) => { const c = p.slice(); c[i] = { ...c[i], ownerName: res.ownerName || '', ownerTitle: res.ownerTitle || '', linkedinUrl: res.linkedinUrl || '' }; return c; });
         en++; setDone(en);
       }
@@ -573,10 +574,7 @@ export default function Page() {
         setResults((prev) => { const c = prev.slice(); c[i] = { ...c[i], status: 'running' }; return c; });
         let res;
         try {
-          res = await fetch('/api/scan', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ website, businessName: row.name, model: mdl, instruction, checks: cleanChecks, noCache, aiPick }),
-          }).then((x) => x.json());
+          res = await postJson('/api/scan', { website, businessName: row.name, model: mdl, instruction, checks: cleanChecks, noCache, aiPick }, 180000);
         } catch (e) { res = { ok: false, status: 'error', error: String(e) }; }
         setResults((prev) => {
           const c = prev.slice();
