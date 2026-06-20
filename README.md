@@ -138,6 +138,22 @@ For every site it fetches the homepage and reads `sitemap.xml` **including neste
 | **no text**            | Site is JavaScript-only with no readable text                                                            |
 | **AI error**           | Ollama wasn't reachable or errored — check the Ollama badge                                              |
 
+## Finding the owner + LinkedIn (optional)
+
+Tick **🔗 Find the owner / decision-maker + LinkedIn** in step 3 to add `owner`, `owner_title`, and `linkedin` columns. How it works (same as Clay):
+
+1. The owner's **name** is read from the site's team/about text the scan already crawled (local Ollama — free).
+2. It then runs **one Google search via Serper** (`"Name" "Company" linkedin`) and parses the `linkedin.com/in/...` URL straight out of the **search results**. It **never visits LinkedIn** (auth-walled, blocks bots), so there's no LinkedIn scraping or blocking — only Serper's own limits.
+3. Local Ollama picks the best-matching profile (most senior: CEO > owner > senior marketing), or leaves it empty.
+
+Setup: add your Serper key to **`.env`** in the project root:
+
+```
+SERPER_API_KEY=your_key_here
+```
+
+Get a free key at [serper.dev](https://serper.dev) (2,500 searches free, then ~$0.30–1 per 1,000). Results are **cached by domain** like everything else, so re-runs don't re-spend credits. Without the key, the columns just come back empty (no error). Many small businesses' owners aren't on LinkedIn — empty is normal.
+
 ## Speed
 
 - **Parallel** number (1–10, default 4) = how many businesses run at once. Higher is faster but heavier; 4–6 is a good range on this Mac.

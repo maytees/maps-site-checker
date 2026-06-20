@@ -147,6 +147,7 @@ export default function Page() {
   const [dedupe, setDedupe] = useState(true);
   const [resolveMaps, setResolveMaps] = useState(true);
   const [aiPick, setAiPick] = useState(true);
+  const [findOwner, setFindOwner] = useState(false);
   const [verifyWebsite, setVerifyWebsite] = useState(false);
   const [concurrency, setConcurrency] = useState(4);
   const [resolveConc, setResolveConc] = useState(2);     // Maps lookups in parallel (captcha-sensitive)
@@ -212,6 +213,7 @@ export default function Page() {
       if (typeof c.dedupe === 'boolean') setDedupe(c.dedupe);
       if (typeof c.resolveMaps === 'boolean') setResolveMaps(c.resolveMaps);
       if (typeof c.aiPick === 'boolean') setAiPick(c.aiPick);
+      if (typeof c.findOwner === 'boolean') setFindOwner(c.findOwner);
       if (typeof c.verifyWebsite === 'boolean') setVerifyWebsite(c.verifyWebsite);
       if (c.concurrency) setConcurrency(c.concurrency);
       if (c.resolveConc) setResolveConc(c.resolveConc);
@@ -227,10 +229,10 @@ export default function Page() {
   // persist config
   useEffect(() => {
     const t = setTimeout(() => {
-      localStorage.setItem(LS, JSON.stringify({ instruction, checks, dedupe, resolveMaps, aiPick, verifyWebsite, concurrency, resolveConc, resolveGap, useChrome, retrySecs, model }));
+      localStorage.setItem(LS, JSON.stringify({ instruction, checks, dedupe, resolveMaps, aiPick, findOwner, verifyWebsite, concurrency, resolveConc, resolveGap, useChrome, retrySecs, model }));
     }, 300);
     return () => clearTimeout(t);
-  }, [instruction, checks, dedupe, resolveMaps, aiPick, verifyWebsite, concurrency, resolveConc, resolveGap, useChrome, retrySecs, model]);
+  }, [instruction, checks, dedupe, resolveMaps, aiPick, findOwner, verifyWebsite, concurrency, resolveConc, resolveGap, useChrome, retrySecs, model]);
 
   async function refreshModels() {
     setOllama({ state: 'checking', error: '' });
@@ -358,12 +360,12 @@ export default function Page() {
     try {
       res = await fetch('/api/scan', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ website, businessName: row.name, model, instruction, checks: cleanChecks, noCache, aiPick }),
+        body: JSON.stringify({ website, businessName: row.name, model, instruction, checks: cleanChecks, noCache, aiPick, findOwner }),
       }).then((x) => x.json());
     } catch (e) { res = { ok: false, status: 'error', error: String(e) }; }
     setResults((prev) => {
       const c = prev.slice();
-      c[i] = { ...c[i], phone: row.phone || res.sitePhone || '', status: res.status || (res.ok ? 'done' : 'error'), verdict: applyUnsureRule(res.verdict) || null, error: res.error || '', finalUrl: res.finalUrl || website, email: res.email || '', emails: res.emails || [], socials: res.socials || {}, sitePhone: res.sitePhone || '', cached: res.cached || false };
+      c[i] = { ...c[i], phone: row.phone || res.sitePhone || '', status: res.status || (res.ok ? 'done' : 'error'), verdict: applyUnsureRule(res.verdict) || null, error: res.error || '', finalUrl: res.finalUrl || website, email: res.email || '', emails: res.emails || [], socials: res.socials || {}, sitePhone: res.sitePhone || '', cached: res.cached || false, ownerName: res.ownerName || '', ownerTitle: res.ownerTitle || '', linkedinUrl: res.linkedinUrl || '' };
       return c;
     });
   }
@@ -562,13 +564,14 @@ export default function Page() {
         try {
           res = await fetch('/api/scan', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ website, businessName: row.name, model: mdl, instruction, checks: cleanChecks, noCache, aiPick }),
+            body: JSON.stringify({ website, businessName: row.name, model: mdl, instruction, checks: cleanChecks, noCache, aiPick, findOwner }),
           }).then((x) => x.json());
         } catch (e) { res = { ok: false, status: 'error', error: String(e) }; }
         setResults((prev) => {
           const c = prev.slice();
           c[i] = { ...c[i], status: res.status || (res.ok ? 'done' : 'error'), verdict: applyUnsureRule(res.verdict) || c[i].verdict, error: res.error || '',
-            email: res.email || c[i].email, socials: res.socials || c[i].socials, phone: c[i].phone || res.sitePhone || '', cached: res.cached || false };
+            email: res.email || c[i].email, socials: res.socials || c[i].socials, phone: c[i].phone || res.sitePhone || '', cached: res.cached || false,
+            ownerName: res.ownerName || c[i].ownerName, ownerTitle: res.ownerTitle || c[i].ownerTitle, linkedinUrl: res.linkedinUrl || c[i].linkedinUrl };
           return c;
         });
         finished++; setDone(finished);
@@ -584,7 +587,7 @@ export default function Page() {
   // ---------- export ----------
   const exportCols = () => {
     const ck = checks.map((c) => c.key).filter(Boolean);
-    return ['lead', 'call_status', 'name', 'phone', 'email', 'city', 'website', 'business_status',
+    return ['lead', 'call_status', 'name', 'phone', 'email', 'owner', 'owner_title', 'linkedin', 'city', 'website', 'business_status',
       ...ck, 'franchise', 'team_size', 'locations', 'business_type', 'confidence', 'ai_notes', 'my_notes',
       'instagram', 'facebook', 'other_emails', 'status', 'maps_link'];
   };
@@ -593,7 +596,7 @@ export default function Page() {
     const c = crm[crmKey(r)] || {};
     const s = r.socials || {};
     const ck = checks.map((x) => x.key).filter(Boolean).map((k) => v[k] || '');
-    return [leadOf(checks, r), c.status || 'new', r.name, fmtPhone(r.phone), r.email || '', r.city, r.finalUrl || r.website, r.businessStatus || '',
+    return [leadOf(checks, r), c.status || 'new', r.name, fmtPhone(r.phone), r.email || '', r.ownerName || '', r.ownerTitle || '', r.linkedinUrl || '', r.city, r.finalUrl || r.website, r.businessStatus || '',
       ...ck, v.franchise || '', v.team_size || '', v.locations || '', v.business_type || '', v.confidence || '', v.notes || '', c.notes || '',
       s.instagram || '', s.facebook || '', (r.emails || []).slice(1).join(' '), r.status, r.maps];
   }
@@ -768,6 +771,10 @@ export default function Page() {
             🧠 Let the AI pick which pages to read from the sitemap (smarter than keyword matching; +1 quick AI call per site). Off = faster, keyword-picked.
           </label>
           <label className="row small muted" style={{ gap: 7, marginTop: 6 }}>
+            <input type="checkbox" checked={findOwner} onChange={(e) => setFindOwner(e.target.checked)} />
+            🔗 Find the owner / decision-maker + LinkedIn (Google-searches via Serper — needs <code>SERPER_API_KEY</code> in <code>.env</code>; never scrapes LinkedIn).
+          </label>
+          <label className="row small muted" style={{ gap: 7, marginTop: 6 }}>
             <input type="checkbox" checked={verifyWebsite} onChange={(e) => setVerifyWebsite(e.target.checked)} />
             🔁 Verify each website from its Google Maps listing BEFORE de-duplicating (fixes CSVs where many rows share a wrong/duplicate URL — dedup then uses the real sites). Needs a Maps link column; uses the headless browser, slower.
           </label>
@@ -934,12 +941,13 @@ function SizeCell({ v }) {
 
 function ResultsTable({ results, checks, crm, onCrm }) {
   const cks = checks.filter((c) => c.key);
+  const showOwner = results.some((r) => r.ownerName || r.linkedinUrl);
   return (
     <div className="tbl-wrap">
       <table>
         <thead>
           <tr>
-            <th>Lead</th><th>Call</th><th>Name</th><th>Phone</th><th>Email</th><th>City</th><th>Site</th><th>Open?</th>
+            <th>Lead</th><th>Call</th><th>Name</th><th>Phone</th><th>Email</th>{showOwner && <><th>Owner</th><th>LinkedIn</th></>}<th>City</th><th>Site</th><th>Open?</th>
             {cks.map((c) => <th key={c.key}>{c.key}</th>)}
             <th>chain?</th><th>size</th><th>type</th><th>Status</th><th>AI note</th><th>My notes</th>
           </tr>
@@ -964,6 +972,8 @@ function ResultsTable({ results, checks, crm, onCrm }) {
                 <td>{r.email
                   ? <span><a href={`mailto:${r.email}`}>{r.email.length > 22 ? r.email.slice(0, 21) + '…' : r.email}</a>{s.instagram ? <a href={s.instagram} target="_blank" rel="noreferrer" title="Instagram"> ◎</a> : null}</span>
                   : (s.instagram || s.facebook) ? <a href={s.instagram || s.facebook} target="_blank" rel="noreferrer" className="muted">social↗</a> : <span className="muted">—</span>}</td>
+                {showOwner && <td title={r.ownerTitle || ''} className="muted">{r.ownerName || '—'}</td>}
+                {showOwner && <td>{r.linkedinUrl ? <a href={r.linkedinUrl} target="_blank" rel="noreferrer" title={r.linkedinUrl}>in↗</a> : <span className="muted">—</span>}</td>}
                 <td>{r.city}</td>
                 <td className="muted">{dom ? <a href={r.finalUrl || r.website} target="_blank" rel="noreferrer">{dom}</a> : (r.maps ? <a href={r.maps} target="_blank" rel="noreferrer" title={r.maps}>maps↗</a> : '')}</td>
                 <td><OpenCell s={r.businessStatus} /></td>

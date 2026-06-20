@@ -1,5 +1,6 @@
 import { normalizeUrl, gatherSiteText } from '@/lib/site';
 import { classify, pickPages, isChain } from '@/lib/ollama';
+import { findDecisionMaker } from '@/lib/enrich';
 import { log, warn, short } from '@/lib/log';
 import { cacheGet, cachePut, sigOf } from '@/lib/cache';
 
@@ -12,7 +13,7 @@ export async function POST(req) {
   let body;
   try { body = await req.json(); } catch { return json({ ok: false, status: 'bad-request', error: 'invalid body' }, 400); }
 
-  const { website, businessName, model, instruction, checks, noCache, aiPick } = body || {};
+  const { website, businessName, model, instruction, checks, noCache, aiPick, findOwner } = body || {};
   if (!model) return json({ ok: false, status: 'error', error: 'no model selected' }, 400);
   if (!Array.isArray(checks) || !checks.length) return json({ ok: false, status: 'error', error: 'no checks defined' }, 400);
 
@@ -25,7 +26,7 @@ export async function POST(req) {
   if (norm.mapsOnly) { warn('scan', `✗ ${name}: maps link only`); return json({ ok: true, status: 'maps-only', error: 'only a Google Maps link — re-scrape with the website (site) field picked', ...chainV }); }
 
   // cache: keyed by domain + a hash of checks/model/instruction/page-selection mode
-  const sig = sigOf(checks.map((c) => [c.key, c.question, c.want || '']), model, instruction || '', aiPick ? 'ai' : 'rx');
+  const sig = sigOf(checks.map((c) => [c.key, c.question, c.want || '']), model, instruction || '', aiPick ? 'ai' : 'rx', findOwner ? 'own' : '');
   if (!noCache) {
     const hit = cacheGet('scan', norm.host, sig);
     if (hit) { log('scan', `• ${name} (cached)`); return json({ ok: true, status: 'done', cached: true, ...hit }); }
@@ -48,6 +49,10 @@ export async function POST(req) {
   // hard-flag obvious chains by name/domain, regardless of what the model said
   if (result.verdict && isChain(name, site.finalUrl)) result.verdict.franchise = 'yes';
 
+  // optional: find the owner/decision-maker + their LinkedIn (Serper search, reuses the crawled text)
+  let owner = { ownerName: '', ownerTitle: '', linkedinUrl: '' };
+  if (findOwner) owner = await findDecisionMaker({ model, businessName: name, siteText: site.text });
+
   const secs = ((Date.now() - t0) / 1000).toFixed(1);
   log('scan', `✓ ${name} done in ${secs}s →`, result.verdict, site.email ? `· email ${site.email}` : '');
   const payload = {
@@ -59,6 +64,7 @@ export async function POST(req) {
     emails: site.emails,
     socials: site.socials,
     sitePhone: site.sitePhone,
+    ...owner,
   };
   cachePut('scan', norm.host, sig, payload);
   return json({ ok: true, status: 'done', ...payload });
