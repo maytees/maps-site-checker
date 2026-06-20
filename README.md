@@ -78,7 +78,8 @@ Change or add your own; instruction + checks are remembered between runs. (If yo
 **4. Run & export** — press **Scan**. Each row runs live (progress bar + per-row status). The **Lead** column says **✓ call / maybe / skip** based on your Wants (a temporarily/permanently closed business is never a "call").
 
 - **Re-run maybes** — if the model was unsure on some rows, a **↻ Re-run N maybes with [model]** button appears. Pick a bigger/more-accurate model (e.g. `qwen2.5:7b` or `qwen2.5:14b`) and it re-scans **only** the `maybe` rows — fast triage without paying the big model on the whole list.
-- **⬇ Export CSV** / **⧉ Copy for Sheets** — columns: lead, call_status, name, phone, email, city, website, business_status, your checks, **franchise**, team_size, locations, business_type, confidence, ai_notes, my_notes, instagram, facebook, other_emails, status, maps_link.
+- **⬇ Export CSV** / **⧉ Copy for Sheets** — exports the table columns in their current order, using any names you've renamed.
+- **Sortable / renameable columns:** click a column header to sort (click again for descending, again to clear); hover a header and click the **✎** to rename it (blank resets). Renames are saved in your browser and the export uses them too.
 - **franchise** — flags national chains / franchises (PetSmart, Petco, VCA, Banfield, Camp Bow Wow, Dogtopia, …). Detected by a built-in chain list (matches even if the site is unreachable) **and** the AI for ones not on the list. Chains aren't skipped — just labelled, so you can filter them out (or in). Shown as a **chain** tag + the **⛓ chains** stat.
 
 In Sheets, filter `lead = yes` for your call list (or `maybe` to review the unsure ones).

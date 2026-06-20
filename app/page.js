@@ -70,6 +70,7 @@ function fmtPhone(v) {
 
 // stable key for the per-lead CRM store (survives re-import): domain > phone > maps > name+city
 const CRM_LS = 'maps-site-checker.crm.v1';
+const LABELS_LS = 'maps-site-checker.collabels.v1';
 const CALL_STATUSES = ['new', 'called', 'interested', 'not interested', 'follow up'];
 function crmKey(r) {
   return domainOf(r.finalUrl || r.website) || normPhone(r.phone) || (r.maps || '').slice(0, 80) ||
@@ -167,6 +168,14 @@ export default function Page() {
   const [, setTick] = useState(0); // forces a re-render every second while running
   const [hideBox, setHideBox] = useState(false);
   const [crm, setCrm] = useState({});       // { key: { status, notes } } — persisted, survives re-import
+  const [colLabels, setColLabels] = useState({}); // renamed column headers, persisted
+  const [sort, setSort] = useState(null);          // { id, dir } — table sort (ephemeral)
+  function renameCol(id, name) {
+    setColLabels((prev) => { const n = { ...prev }; if (!name) delete n[id]; else n[id] = name; try { localStorage.setItem(LABELS_LS, JSON.stringify(n)); } catch { /* ignore */ } return n; });
+  }
+  function sortBy(id) {
+    setSort((s) => (!s || s.id !== id) ? { id, dir: 'asc' } : s.dir === 'asc' ? { id, dir: 'desc' } : null);
+  }
   const [maybeModel, setMaybeModel] = useState('');
   const [noCache, setNoCache] = useState(false);
   const [cacheInfo, setCacheInfo] = useState({ total: 0, scan: 0, resolve: 0 });
@@ -183,6 +192,7 @@ export default function Page() {
   // load the CRM store once
   useEffect(() => {
     try { setCrm(JSON.parse(localStorage.getItem(CRM_LS) || '{}')); } catch { /* ignore */ }
+    try { setColLabels(JSON.parse(localStorage.getItem(LABELS_LS) || '{}')); } catch { /* ignore */ }
   }, []);
   function setCrmField(key, field, value) {
     setCrm((prev) => {
@@ -547,20 +557,12 @@ export default function Page() {
   }
 
   // ---------- export ----------
-  const exportCols = () => {
-    const ck = checks.map((c) => c.key).filter(Boolean);
-    return ['lead', 'call_status', 'name', 'phone', 'email', 'owner', 'owner_title', 'linkedin', 'city', 'website', 'business_status',
-      ...ck, 'franchise', 'team_size', 'locations', 'business_type', 'confidence', 'ai_notes', 'my_notes',
-      'instagram', 'facebook', 'other_emails', 'status', 'maps_link'];
-  };
+  // export uses the same column registry + order + renamed labels as the table
+  const exportColDefs = () => tableColumns(checks, !!(results && results.some((r) => r.ownerName || r.linkedinUrl)));
+  const exportCols = () => exportColDefs().map((c) => (colLabels[c.id] != null ? colLabels[c.id] : c.label));
   function rowValues(r) {
-    const v = r.verdict || {};
-    const c = crm[crmKey(r)] || {};
-    const s = r.socials || {};
-    const ck = checks.map((x) => x.key).filter(Boolean).map((k) => v[k] || '');
-    return [leadOf(checks, r), c.status || 'new', r.name, fmtPhone(r.phone), r.email || '', r.ownerName || '', r.ownerTitle || '', r.linkedinUrl || '', r.city, r.finalUrl || r.website, r.businessStatus || '',
-      ...ck, v.franchise || '', v.team_size || '', v.locations || '', v.business_type || '', v.confidence || '', v.notes || '', c.notes || '',
-      s.instagram || '', s.facebook || '', (r.emails || []).slice(1).join(' '), r.status, r.maps];
+    const ctx = { crm, checks };
+    return exportColDefs().map((c) => c.get(r, ctx));
   }
   function exportCSV() {
     if (!results) return;
@@ -795,7 +797,7 @@ export default function Page() {
             <div className="row mt small muted" style={{ gap: 14 }}>
               {Object.entries(counts).map(([k, v]) => <span key={k}><StatusTag status={k} /> {v}</span>)}
             </div>
-            <ResultsTable results={results} checks={checks} crm={crm} onCrm={setCrmField} />
+            <ResultsTable results={results} checks={checks} crm={crm} onCrm={setCrmField} labels={colLabels} onRename={renameCol} sort={sort} onSort={sortBy} />
           </>}
       </section>
 
@@ -879,61 +881,88 @@ function OpenCell({ s }) {
   return <span className="tag no">{s === 'permanently_closed' ? 'closed' : 'temp closed'}</span>;
 }
 
-function SizeCell({ v }) {
-  const t = v.team_size, l = v.locations;
-  if (!t && !l) return <span className="muted">—</span>;
-  const tl = { solo: 'solo', small_team: 'team', large_team: 'big', '': '' };
-  return <span className="muted tiny">{tl[t] || ''}{t && l ? ' · ' : ''}{l === 'multiple' ? 'multi' : l === 'single' ? '1 loc' : ''}</span>;
+const vget = (r, k) => (r.verdict && r.verdict[k]) || '';
+
+// Column registry — drives BOTH the table and the CSV/TSV export, in this order.
+// Each: { id, label (default, renameable), get(r,ctx)->string (sort/export), cell?(r,ctx)->JSX }.
+function tableColumns(checks, showOwner) {
+  const checkCols = checks.filter((c) => c.key).map((c) => ({
+    id: 'check:' + c.key, label: c.key, want: c.want,
+    get: (r) => vget(r, c.key),
+    cell: (r) => <Verdict v={vget(r, c.key)} want={c.want} />,
+  }));
+  const link = (href, text, title) => href ? <a href={href} target="_blank" rel="noreferrer" title={title || href}>{text}</a> : <span className="muted">—</span>;
+  const cols = [
+    { id: 'my_notes', label: 'Personal Notes', get: (r, x) => (x.crm[crmKey(r)] || {}).notes || '',
+      cell: (r, x) => { const k = crmKey(r); return <input className="notein" value={(x.crm[k] || {}).notes || ''} placeholder="…" onChange={(e) => x.onCrm(k, 'notes', e.target.value)} />; } },
+    { id: 'lead', label: 'Valid Lead', get: (r, x) => leadOf(x.checks, r), cell: (r, x) => <LeadTag lead={leadOf(x.checks, r)} /> },
+    { id: 'call', label: 'Status', get: (r, x) => (x.crm[crmKey(r)] || {}).status || 'new',
+      cell: (r, x) => { const k = crmKey(r); const st = (x.crm[k] || {}).status || 'new'; return <select className={'callsel cs-' + st.replace(/\s/g, '-')} value={st} onChange={(e) => x.onCrm(k, 'status', e.target.value)}>{CALL_STATUSES.map((s2) => <option key={s2} value={s2}>{s2}</option>)}</select>; } },
+    { id: 'name', label: 'Name', get: (r) => r.name || '', cell: (r) => <span title={r.finalUrl || r.website}>{r.name || <span className="muted">—</span>}</span> },
+    { id: 'phone', label: 'Phone', get: (r) => r.phone || '', cell: (r) => r.phone ? <a href={`tel:${r.phone}`}>{fmtPhone(r.phone)}</a> : <span className="muted">—</span> },
+    { id: 'city', label: 'City', get: (r) => r.city || '', cell: (r) => r.city || <span className="muted">—</span> },
+    { id: 'locations', label: 'Locations', get: (r) => vget(r, 'locations'), cell: (r) => <span className="muted">{vget(r, 'locations') || '—'}</span> },
+    { id: 'website', label: 'Website', get: (r) => domainOf(r.finalUrl || r.website) || '',
+      cell: (r) => { const dom = domainOf(r.finalUrl || r.website); return dom ? link(r.finalUrl || r.website, dom) : (r.maps ? link(r.maps, 'maps↗') : <span className="muted">—</span>); } },
+    { id: 'ai_notes', label: 'AI Notes', get: (r) => vget(r, 'notes') || r.error || '', cell: (r) => { const t = vget(r, 'notes') || r.error || ''; return <span className="wrap-cell" title={t}>{t.slice(0, 90)}</span>; } },
+    { id: 'maps', label: 'Maps Link', get: (r) => r.maps || '', cell: (r) => r.maps ? link(r.maps, 'maps↗') : <span className="muted">—</span> },
+    { id: 'email', label: 'Email', get: (r) => r.email || '', cell: (r) => r.email ? <a href={`mailto:${r.email}`} title={r.email}>{r.email.length > 24 ? r.email.slice(0, 23) + '…' : r.email}</a> : <span className="muted">—</span> },
+    { id: 'business_status', label: 'business_status', get: (r) => r.businessStatus || '', cell: (r) => <OpenCell s={r.businessStatus} /> },
+    ...checkCols,
+    { id: 'franchise', label: 'Franchise?', get: (r) => vget(r, 'franchise'), cell: (r) => vget(r, 'franchise') === 'yes' ? <span className="tag chain">chain</span> : <span className="muted">—</span> },
+    { id: 'team_size', label: 'Team Size', get: (r) => vget(r, 'team_size'), cell: (r) => <span className="muted">{vget(r, 'team_size').replace('_', ' ') || '—'}</span> },
+    { id: 'type', label: 'Type', get: (r) => vget(r, 'business_type'), cell: (r) => <span className="muted">{vget(r, 'business_type')}</span> },
+    { id: 'confidence', label: 'Confidence', get: (r) => vget(r, 'confidence'), cell: (r) => <span className="muted">{vget(r, 'confidence')}</span> },
+    { id: 'instagram', label: 'Instagram', get: (r) => (r.socials && r.socials.instagram) || '', cell: (r) => (r.socials && r.socials.instagram) ? link(r.socials.instagram, 'IG↗') : <span className="muted">—</span> },
+    { id: 'facebook', label: 'Facebook', get: (r) => (r.socials && r.socials.facebook) || '', cell: (r) => (r.socials && r.socials.facebook) ? link(r.socials.facebook, 'FB↗') : <span className="muted">—</span> },
+    { id: 'other_emails', label: 'Other Emails', get: (r) => (r.emails || []).slice(1).join(' '), cell: (r) => { const e = (r.emails || []).slice(1).join(', '); return <span className="muted" title={e}>{e.slice(0, 40) || '—'}</span>; } },
+    { id: 'status', label: 'Status', get: (r) => r.status || '', cell: (r) => <StatusTag status={r.status} /> },
+  ];
+  if (showOwner) cols.push(
+    { id: 'owner', label: 'Owner', get: (r) => r.ownerName || '', cell: (r) => <span className="muted" title={r.ownerTitle || ''}>{r.ownerName || '—'}</span> },
+    { id: 'linkedin', label: 'LinkedIn', get: (r) => r.linkedinUrl || '', cell: (r) => r.linkedinUrl ? link(r.linkedinUrl, 'in↗') : <span className="muted">—</span> },
+  );
+  return cols;
 }
 
-function ResultsTable({ results, checks, crm, onCrm }) {
-  const cks = checks.filter((c) => c.key);
+function sortRows(results, cols, sort, ctx) {
+  const rows = results.map((r, i) => ({ r, i }));
+  if (!sort || !sort.id) return rows;
+  const col = cols.find((c) => c.id === sort.id);
+  if (!col) return rows;
+  rows.sort((a, b) => {
+    const va = col.get(a.r, ctx), vb = col.get(b.r, ctx);
+    const na = parseFloat(String(va).replace(/[^0-9.-]/g, '')), nb = parseFloat(String(vb).replace(/[^0-9.-]/g, ''));
+    const numeric = String(va).trim() && String(vb).trim() && !isNaN(na) && !isNaN(nb);
+    const cmp = numeric ? na - nb : String(va).localeCompare(String(vb));
+    return sort.dir === 'desc' ? -cmp : cmp;
+  });
+  return rows;
+}
+
+function ResultsTable({ results, checks, crm, onCrm, labels, onRename, sort, onSort }) {
   const showOwner = results.some((r) => r.ownerName || r.linkedinUrl);
+  const cols = tableColumns(checks, showOwner);
+  const ctx = { crm, onCrm, checks };
+  const lbl = (c) => (labels[c.id] != null ? labels[c.id] : c.label);
+  const rows = sortRows(results, cols, sort, ctx);
   return (
     <div className="tbl-wrap">
       <table>
         <thead>
           <tr>
-            <th>Lead</th><th>Call</th><th>Name</th><th>Phone</th><th>Email</th>{showOwner && <><th>Owner</th><th>LinkedIn</th></>}<th>City</th><th>Site</th><th>Open?</th>
-            {cks.map((c) => <th key={c.key}>{c.key}</th>)}
-            <th>chain?</th><th>size</th><th>type</th><th>Status</th><th>AI note</th><th>My notes</th>
+            {cols.map((c) => (
+              <th key={c.id} className="sortable" onClick={() => onSort(c.id)} title="click to sort">
+                {lbl(c)}{sort && sort.id === c.id ? (sort.dir === 'desc' ? ' ▼' : ' ▲') : ''}
+                <span className="renh" title="rename" onClick={(e) => { e.stopPropagation(); const n = prompt('Rename column (blank = reset)', lbl(c)); if (n != null) onRename(c.id, n.trim()); }}>✎</span>
+              </th>
+            ))}
           </tr>
         </thead>
         <tbody>
-          {results.map((r, i) => {
-            const v = r.verdict || {};
-            const key = crmKey(r);
-            const cr = crm[key] || {};
-            const dom = domainOf(r.finalUrl || r.website);
-            const s = r.socials || {};
-            return (
-              <tr key={i}>
-                <td><LeadTag lead={leadOf(checks, r)} /></td>
-                <td>
-                  <select className={'callsel cs-' + (cr.status || 'new').replace(/\s/g, '-')} value={cr.status || 'new'} onChange={(e) => onCrm(key, 'status', e.target.value)}>
-                    {CALL_STATUSES.map((s2) => <option key={s2} value={s2}>{s2}</option>)}
-                  </select>
-                </td>
-                <td title={r.finalUrl || r.website}>{r.name || <span className="muted">—</span>}</td>
-                <td>{r.phone ? <a href={`tel:${r.phone}`}>{fmtPhone(r.phone)}</a> : <span className="muted">—</span>}</td>
-                <td>{r.email
-                  ? <span><a href={`mailto:${r.email}`}>{r.email.length > 22 ? r.email.slice(0, 21) + '…' : r.email}</a>{s.instagram ? <a href={s.instagram} target="_blank" rel="noreferrer" title="Instagram"> ◎</a> : null}</span>
-                  : (s.instagram || s.facebook) ? <a href={s.instagram || s.facebook} target="_blank" rel="noreferrer" className="muted">social↗</a> : <span className="muted">—</span>}</td>
-                {showOwner && <td title={r.ownerTitle || ''} className="muted">{r.ownerName || '—'}</td>}
-                {showOwner && <td>{r.linkedinUrl ? <a href={r.linkedinUrl} target="_blank" rel="noreferrer" title={r.linkedinUrl}>in↗</a> : <span className="muted">—</span>}</td>}
-                <td>{r.city}</td>
-                <td className="muted">{dom ? <a href={r.finalUrl || r.website} target="_blank" rel="noreferrer">{dom}</a> : (r.maps ? <a href={r.maps} target="_blank" rel="noreferrer" title={r.maps}>maps↗</a> : '')}</td>
-                <td><OpenCell s={r.businessStatus} /></td>
-                {cks.map((c) => <td key={c.key}><Verdict v={v[c.key]} want={c.want} /></td>)}
-                <td>{v.franchise === 'yes' ? <span className="tag chain">chain</span> : <span className="muted">—</span>}</td>
-                <td><SizeCell v={v} /></td>
-                <td className="muted">{v.business_type || ''}</td>
-                <td><StatusTag status={r.status} /></td>
-                <td className="wrap-cell" title={v.notes || r.error || ''}>{(v.notes || r.error || '').slice(0, 70)}</td>
-                <td><input className="notein" value={cr.notes || ''} placeholder="…" onChange={(e) => onCrm(key, 'notes', e.target.value)} /></td>
-              </tr>
-            );
-          })}
+          {rows.map(({ r, i }) => (
+            <tr key={i}>{cols.map((c) => <td key={c.id}>{c.cell ? c.cell(r, ctx) : (c.get(r, ctx) || <span className="muted">—</span>)}</td>)}</tr>
+          ))}
         </tbody>
       </table>
     </div>
