@@ -72,7 +72,7 @@ The defaults match the Petzio target — a staffed boarding/daycare facility tha
 Change or add your own; instruction + checks are remembered between runs. (If you previously ran the app, hit **↺ defaults** to load these.)
 
 - **Skip duplicates** (on): de-dups by the **Google Maps listing** (each listing = one business), falling back to phone then domain only if there's no link. Chains and businesses that share a website (PetSmart locations, anyone using a facebook.com page) are **kept**, not collapsed — domain is a bad key for those.
-- **Verify website before de-duplicating** (off): if your CSV has many rows sharing the *same wrong* URL, turn this on. It first opens each **Google Maps listing**, replaces the CSV website with the real one (and grabs phone/closed), and *only then* removes duplicates — so genuinely different businesses aren't dropped over a bad shared URL. Needs a Maps link column; slower (one headless-browser open per row, but cached). Duplicates are marked `duplicate` and skipped, not scanned.
+- **Verify website** (off): force-resolves every row's real site from its Google Maps listing even when the CSV already has a website (replaces wrong ones), and grabs phone/closed. It runs **pipelined with the AI scan** — the headless browser resolves listings while the AI scans the ones already resolved, so scanning starts right away instead of waiting for all listings to verify. De-dup happens upfront on the **Maps link** (it doesn't need the resolved website), so chains/distinct businesses aren't wrongly collapsed. Needs a Maps link column; cached.
 - **Resolve from Maps link** (on): see below.
 
 **4. Run & export** — press **Scan**. Each row runs live (progress bar + per-row status). The **Lead** column says **✓ call / maybe / skip** based on your Wants (a temporarily/permanently closed business is never a "call").
@@ -140,7 +140,7 @@ For every site it fetches the homepage and reads `sitemap.xml` **including neste
 
 ## Finding the owner + LinkedIn (optional)
 
-Tick **🔗 Find the owner / decision-maker + LinkedIn** in step 3 to add `owner`, `owner_title`, and `linkedin` columns. How it works (same as Clay):
+Tick **🔗 Find the owner / decision-maker + LinkedIn** in step 3 to add `owner`, `owner_title`, and `linkedin` columns. **It runs only on confirmed leads (lead = ✓ call)** — after scanning, so the paid Serper search is never spent on `maybe`/`skip` rows. How it works (same as Clay):
 
 1. The owner's **name** is read from the site's team/about text the scan already crawled (local Ollama — free).
 2. It then runs **one Google search via Serper** (`"Name" "Company" linkedin`) and parses the `linkedin.com/in/...` URL straight out of the **search results**. It **never visits LinkedIn** (auth-walled, blocks bots), so there's no LinkedIn scraping or blocking — only Serper's own limits.

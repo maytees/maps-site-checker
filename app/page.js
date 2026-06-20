@@ -157,18 +157,13 @@ export default function Page() {
   const [retryMsg, setRetryMsg] = useState('');          // live "retrying in Ns" status
   const resolveOpts = () => ({ resolveConcurrency: resolveConc, resolveGap, browserMode: useChrome ? 'chrome' : 'headless', resolveCooldown: Math.max(0, retrySecs) * 1000 });
 
-  const [results, setResults] = useState(null); // [{name,phone,city,website,maps,status,verdict,error}]
+  const [results, setResults] = useState(null);
+  const resultsRef = useRef(null); // latest results, readable inside async run() without stale closures // [{name,phone,city,website,maps,status,verdict,error}]
   const [running, setRunning] = useState(false);
   const [done, setDone] = useState(0);
   const [runStart, setRunStart] = useState(0);
   const [runEnd, setRunEnd] = useState(0);
   const [runTotal, setRunTotal] = useState(0);
-  // separate progress for the verify-website phase
-  const [vDoneN, setVDoneN] = useState(0);
-  const [vTotalN, setVTotalN] = useState(0);
-  const [vStart, setVStart] = useState(0);
-  const [vEnd, setVEnd] = useState(0);
-  const [vCachedN, setVCachedN] = useState(0);
   const [, setTick] = useState(0); // forces a re-render every second while running
   const [hideBox, setHideBox] = useState(false);
   const [crm, setCrm] = useState({});       // { key: { status, notes } } — persisted, survives re-import
@@ -203,6 +198,8 @@ export default function Page() {
     const id = setInterval(() => setTick((t) => t + 1), 1000);
     return () => clearInterval(id);
   }, [running]);
+
+  useEffect(() => { resultsRef.current = results; }, [results]);
 
   // load saved config
   useEffect(() => {
@@ -333,8 +330,7 @@ export default function Page() {
     return v;
   }
 
-  // Phase 1: open each Maps listing, replace the CSV website with the real one (+ phone/closed).
-  // --- shared resolve/scan helpers (used by run, verify, and the captcha retry loops) ---
+  // --- shared resolve/scan helpers (used by run + the captcha retry loop) ---
 
   // Open the Maps listing, apply website/phone/closed to the row + results. Returns the raw rr.
   async function resolveInto(i, row) {
@@ -360,12 +356,12 @@ export default function Page() {
     try {
       res = await fetch('/api/scan', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ website, businessName: row.name, model, instruction, checks: cleanChecks, noCache, aiPick, findOwner }),
+        body: JSON.stringify({ website, businessName: row.name, model, instruction, checks: cleanChecks, noCache, aiPick }),
       }).then((x) => x.json());
     } catch (e) { res = { ok: false, status: 'error', error: String(e) }; }
     setResults((prev) => {
       const c = prev.slice();
-      c[i] = { ...c[i], phone: row.phone || res.sitePhone || '', status: res.status || (res.ok ? 'done' : 'error'), verdict: applyUnsureRule(res.verdict) || null, error: res.error || '', finalUrl: res.finalUrl || website, email: res.email || '', emails: res.emails || [], socials: res.socials || {}, sitePhone: res.sitePhone || '', cached: res.cached || false, ownerName: res.ownerName || '', ownerTitle: res.ownerTitle || '', linkedinUrl: res.linkedinUrl || '' };
+      c[i] = { ...c[i], phone: row.phone || res.sitePhone || '', status: res.status || (res.ok ? 'done' : 'error'), verdict: applyUnsureRule(res.verdict) || null, error: res.error || '', finalUrl: res.finalUrl || website, email: res.email || '', emails: res.emails || [], socials: res.socials || {}, sitePhone: res.sitePhone || '', cached: res.cached || false };
       return c;
     });
   }
@@ -379,94 +375,26 @@ export default function Page() {
     setRetryMsg('');
   }
 
-  // Phase 1: resolve every row's real website. Captcha'd rows aren't dropped —
-  // they're retried every `retrySecs` until they go through. Phase 2: de-dup on verified data.
-  async function verifyAndDedup(rows) {
-    setVTotalN(rows.filter((r) => r.maps).length);
-    setVDoneN(0); setVCachedN(0); setVStart(Date.now()); setVEnd(0);
-    let next = 0, vDone = 0, vCached = 0;
-    let blocked = [];
-    const tick = (rr) => { vDone++; setVDoneN(vDone); if (rr.cached) { vCached++; setVCachedN(vCached); } };
-    const work = async () => {
-      while (!stopRef.current) {
-        const i = next++;
-        if (i >= rows.length) break;
-        const row = rows[i];
-        if (!row.maps) continue;
-        const rr = await resolveInto(i, row);
-        if (rr.status === 'blocked') {
-          blocked.push(i);
-          setResults((prev) => { const c = prev.slice(); c[i] = { ...c[i], status: 'maps-blocked' }; return c; });
-        } else {
-          setResults((prev) => { const c = prev.slice(); c[i] = { ...c[i], status: 'pending' }; return c; });
-          tick(rr);
-        }
-      }
-    };
-    const n = Math.max(1, Math.min(10, concurrency));
-    await Promise.all(Array.from({ length: n }, work));
-
-    // retry the captcha'd ones every retrySecs until they all go through (or you stop)
-    while (blocked.length && !stopRef.current) {
-      await waitRetry(Math.max(5, retrySecs), blocked.length);
-      if (stopRef.current) break;
-      const still = [];
-      for (const i of blocked) {
-        if (stopRef.current) { still.push(i); continue; }
-        const rr = await resolveInto(i, rows[i]);
-        if (rr.status === 'blocked') {
-          still.push(i);
-          setResults((prev) => { const c = prev.slice(); c[i] = { ...c[i], status: 'maps-blocked' }; return c; });
-        } else {
-          setResults((prev) => { const c = prev.slice(); c[i] = { ...c[i], status: 'pending' }; return c; });
-          tick(rr);
-        }
-      }
-      blocked = still;
-    }
-    setVEnd(Date.now());
-
-    if (!dedupe) return;
-    const seen = new Set();
-    for (let i = 0; i < rows.length; i++) {
-      const row = rows[i];
-      const key = dedupKey(row.maps, row.phone, row.website);
-      if (key && seen.has(key)) {
-        row.skip = true;
-        setResults((prev) => { const c = prev.slice(); c[i] = { ...c[i], status: 'duplicate' }; return c; });
-      } else if (key) {
-        seen.add(key);
-      }
-    }
-  }
-
   async function run() {
     if (map.website < 0 && map.maps < 0) { alert('Map a Website column, or a Google Maps link column to resolve from (step 2).'); return; }
     if (!model) { alert('Pick a model (step 3). Is Ollama running?'); return; }
     const cleanChecks = getCleanChecks();
     if (!cleanChecks.length) { alert('Add at least one check (step 3).'); return; }
 
-    // verify mode: resolve the real website from each Maps listing BEFORE de-duping,
-    // so wrong/duplicate URLs in the CSV don't drop genuinely distinct businesses
+    // De-dup upfront on the Maps link (doesn't need the resolved website). "verify" now just
+    // means force-resolve every row's real site — and it runs PIPELINED with scanning (the
+    // headless browser resolves while the AI scans already-resolved rows), not as a slow
+    // separate phase. The AI never waits for the whole verify pass to finish.
     const verify = verifyWebsite && map.maps >= 0;
-    const { rows, dupCount } = buildRows(verify ? false : dedupe);
+    const { rows, dupCount } = buildRows(dedupe);
     setResults(rows.map((r) => ({ ...r })));
     setDone(0);
-    setVTotalN(0);
-    setRunTotal(rows.length);
+    setRunTotal(rows.filter((r) => !r.skip).length);
     setRunStart(Date.now());
     setRunEnd(0);
     setRunning(true);
     setHideBox(false);
     stopRef.current = false;
-
-    if (verify) {
-      await verifyAndDedup(rows);
-      setDone(0);           // reset progress/rate for the scan phase
-      setRunStart(Date.now());
-      setRunEnd(0);
-    }
-    setRunTotal(rows.filter((r) => !r.skip).length);
 
     const prog = { done: 0 };
     const blocked = [];          // rows captcha'd while resolving — retried, never dropped
@@ -477,7 +405,8 @@ export default function Page() {
       const row = rows[i];
       let website = row.website;
 
-      const needResolve = resolveMaps && row.maps && (!website || !row.phone);
+      // verify forces a resolve even when a CSV website exists (to replace wrong ones)
+      const needResolve = row.maps && (verify || (resolveMaps && (!website || !row.phone)));
       if (needResolve) {
         const rr = await resolveInto(i, row);
         website = row.website;
@@ -525,6 +454,40 @@ export default function Page() {
       blocked.length = 0; blocked.push(...still);
     }
 
+    // Enrich ONLY confirmed leads (lead === 'yes') — Serper is paid, so skip maybe/no.
+    if (findOwner && !stopRef.current) {
+      const cur = resultsRef.current || [];
+      const idxs = [];
+      for (let i = 0; i < cur.length; i++) {
+        const r = cur[i];
+        if (r && !r.skip && leadOf(checks, r) === 'yes' && (r.finalUrl || r.website) && !r.linkedinUrl) idxs.push(i);
+      }
+      if (idxs.length) {
+        let en = 0, eNext = 0;
+        const eWork = async () => {
+          while (!stopRef.current) {
+            const k = eNext++;
+            if (k >= idxs.length) break;
+            const i = idxs[k];
+            const r = resultsRef.current[i];
+            setRetryMsg(`🔗 finding owner + LinkedIn for leads — ${en}/${idxs.length}`);
+            let res;
+            try {
+              res = await fetch('/api/enrich', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ website: r.finalUrl || r.website, businessName: r.name, model, noCache }),
+              }).then((x) => x.json());
+            } catch (e) { res = {}; }
+            setResults((p) => { const c = p.slice(); c[i] = { ...c[i], ownerName: res.ownerName || '', ownerTitle: res.ownerTitle || '', linkedinUrl: res.linkedinUrl || '' }; return c; });
+            en++;
+          }
+        };
+        await Promise.all(Array.from({ length: Math.max(1, Math.min(4, concurrency)) }, eWork));
+        setRetryMsg('');
+        refreshCache();
+      }
+    }
+
     setRunEnd(Date.now());
     setRunning(false);
     setRetryMsg('');
@@ -564,14 +527,13 @@ export default function Page() {
         try {
           res = await fetch('/api/scan', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ website, businessName: row.name, model: mdl, instruction, checks: cleanChecks, noCache, aiPick, findOwner }),
+            body: JSON.stringify({ website, businessName: row.name, model: mdl, instruction, checks: cleanChecks, noCache, aiPick }),
           }).then((x) => x.json());
         } catch (e) { res = { ok: false, status: 'error', error: String(e) }; }
         setResults((prev) => {
           const c = prev.slice();
           c[i] = { ...c[i], status: res.status || (res.ok ? 'done' : 'error'), verdict: applyUnsureRule(res.verdict) || c[i].verdict, error: res.error || '',
-            email: res.email || c[i].email, socials: res.socials || c[i].socials, phone: c[i].phone || res.sitePhone || '', cached: res.cached || false,
-            ownerName: res.ownerName || c[i].ownerName, ownerTitle: res.ownerTitle || c[i].ownerTitle, linkedinUrl: res.linkedinUrl || c[i].linkedinUrl };
+            email: res.email || c[i].email, socials: res.socials || c[i].socials, phone: c[i].phone || res.sitePhone || '', cached: res.cached || false };
           return c;
         });
         finished++; setDone(finished);
@@ -634,9 +596,6 @@ export default function Page() {
   const phoneCount = results ? results.filter((r) => r.phone).length : 0;
   const franchiseCount = results ? results.filter((r) => r.verdict && r.verdict.franchise === 'yes').length : 0;
   const cachedCount = results ? results.filter((r) => r.cached).length : 0;
-  const vElapsedMs = vStart ? (vEnd || Date.now()) - vStart : 0;
-  const vRatePerMin = vElapsedMs > 1000 && (vDoneN - vCachedN) > 0 ? (vDoneN - vCachedN) / (vElapsedMs / 60000) : 0;
-  const vActive = vTotalN > 0 && vDoneN < vTotalN && !vEnd;
   const elapsedMs = runStart ? (runEnd || Date.now()) - runStart : 0;
   // rate = REAL scans per minute (cached hits are ~instant and would inflate it)
   const realDone = Math.max(0, done - cachedCount);
@@ -776,7 +735,7 @@ export default function Page() {
           </label>
           <label className="row small muted" style={{ gap: 7, marginTop: 6 }}>
             <input type="checkbox" checked={verifyWebsite} onChange={(e) => setVerifyWebsite(e.target.checked)} />
-            🔁 Verify each website from its Google Maps listing BEFORE de-duplicating (fixes CSVs where many rows share a wrong/duplicate URL — dedup then uses the real sites). Needs a Maps link column; uses the headless browser, slower.
+            🔁 Verify every website from its Google Maps listing (force-resolve the real site even when the CSV has one). Runs <b>pipelined with the AI scan</b> — the browser resolves while the AI scans already-resolved rows, so the scan starts immediately instead of waiting for all listings. Needs a Maps link column.
           </label>
           {verifyWebsite && map.maps < 0 &&
             <span className="pill err" style={{ marginTop: 4 }}>Map a <b>Google Maps link</b> column (step 2) for verification to run.</span>}
@@ -816,18 +775,6 @@ export default function Page() {
 
         {results &&
           <>
-            {vTotalN > 0 &&
-              <div className="vphase">
-                <div className="row spread small">
-                  <b style={{ color: '#9ec1ff' }}>🔁 {vActive ? 'Verifying websites from Google Maps…' : 'Website verification done'}</b>
-                  <span className="muted">
-                    {vDoneN}/{vTotalN} · ⚡ {vRatePerMin ? vRatePerMin.toFixed(1) : '—'}/min
-                    {vCachedN > 0 ? ` · ♻ ${vCachedN} cached` : ''}
-                    {vActive ? ` · ⏱ ${fmtDur(vElapsedMs)}` : ''}
-                  </span>
-                </div>
-                <div className="bar"><i className="blue" style={{ width: vTotalN ? `${(vDoneN / vTotalN) * 100}%` : 0 }} /></div>
-              </div>}
             <div className="bar"><i style={{ width: total ? `${(done / total) * 100}%` : 0 }} /></div>
             <div className="row mt small" style={{ gap: 14 }}>
               <span className="pill">{done}/{total} done</span>
